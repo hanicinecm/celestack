@@ -1,2 +1,3 @@
-# celestack
-Starscape photography track &amp; stack software.
+# Celestack
+
+Nightscape photography track & stack software.
