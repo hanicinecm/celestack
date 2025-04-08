@@ -43,7 +43,7 @@ def get_project_frames_dir(project_name: str) -> Path:
     frames are stored.
 
     In the frames directory, the frame states are stored in configuration files, as well
-    as the compressed preview images.
+    as the compressed images and any newly created full-res images.
 
     If the frames directory does not exist, it will be created.
 
@@ -53,6 +53,24 @@ def get_project_frames_dir(project_name: str) -> Path:
     Returns:
         The path to the frames directory within the project's directory.
     """
-    previews_dir = get_project_dir(project_name) / "frames"
-    previews_dir.mkdir(parents=False, exist_ok=True)
-    return previews_dir
+    frames_dir = get_project_dir(project_name) / "frames"
+    frames_dir.mkdir(parents=False, exist_ok=True)
+    return frames_dir
+
+
+def get_frame_state_path(project_name: str, frame_name: str) -> Path:
+    """
+    Returns the path to the YAML file for a specific frame in a Celestack project.
+
+    The YAML file contains the state of the frame, including its metadata and
+    configuration and it has the same name as the original image, but with a `.yaml`
+    extension.
+
+    Args:
+        project_name: The name of the project.
+        frame_name: The name of the frame.
+
+    Returns:
+        The path to the YAML file for the specified frame.
+    """
+    return get_project_frames_dir(project_name) / f"{frame_name}_state.yaml"
