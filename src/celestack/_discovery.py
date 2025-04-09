@@ -73,4 +73,4 @@ def get_frame_state_path(project_name: str, frame_name: str) -> Path:
     Returns:
         The path to the YAML file for the specified frame.
     """
-    return get_project_frames_dir(project_name) / f"{frame_name}_state.yaml"
+    return get_project_frames_dir(project_name) / f"{frame_name}.yaml"
