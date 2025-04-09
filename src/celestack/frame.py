@@ -61,6 +61,9 @@ class _Frame:
         and the compressed image), the instance should be created using the `from_state`
         class method.
 
+        The class will work both with RGB images (light frames, dark frames, etc) and
+        with grayscale images (used for instantiating the Mask class).
+
         Args:
             project: The name of the project to which this frame belongs.
             name: The name of the frame. This is assigned by the project and usually
@@ -266,6 +269,43 @@ class LightFrame(_Frame):
         # Update the project files:
         self.update_image(full_array)
         self.dump_state()
+
+
+class Mask(_Frame):
+    """
+    A class representing a mask frame in a celestack project.
+
+    A Mask is a special kind of Frame, which expects the passed image to be a binary
+    mask, where white pixels are the sky, while the black pixels are the foreground.
+    """
+
+    def __init__(
+        self,
+        project: str,
+        name: str,
+        img_path: str | PathLike | None = None,
+        img_array: np.ndarray | None = None,
+    ):
+        if img_array is not None:
+            # Validate that the mask is a 2D binary mask:
+            if img_array.ndim != 2:
+                raise ValueError("The mask array must be a 2D array.")
+            if not np.array_equal(img_array, img_array.astype(bool)):
+                raise ValueError("The mask array must be a boolean array.")
+            # Make it into a 8bit grayscale image, to conform with the _Frame class:
+            img_array = img_array.astype(np.uint8) * 255
+
+        super().__init__(
+            project=project,
+            name=name,
+            img_path=img_path,
+            img_array=img_array,
+        )
+
+    @property
+    def mask_array(self) -> np.ndarray:
+        """Returns the binary mask as a NumPy array with boolean datatype."""
+        return self.compressed_array.astype(bool)
 
 
 class AverageFrame(_Frame):
