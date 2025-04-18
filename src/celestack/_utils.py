@@ -5,6 +5,7 @@ import exifread
 import numpy as np
 import tifffile
 from PIL import Image
+from plotly import graph_objects as go
 
 
 def read_image(img_path: str | PathLike) -> np.ndarray:
@@ -152,3 +153,34 @@ def compress_image(img_array: np.ndarray, downscale_factor: int = 1) -> np.ndarr
     img_array = img_array.astype(np.uint8)
 
     return img_array
+
+
+def plot_image(array: np.ndarray) -> go.Figure:
+    """
+    Displays an image using matplotlib.
+
+    Args:
+        array: The image array to display.
+
+    Returns:
+        A Plotly figure object containing the image.
+    """
+    if array.ndim == 2:
+        fig = go.Figure(data=go.Heatmap(z=array, colorscale="gray", showscale=False))
+    else:
+        raise NotImplementedError
+
+    fig.update_layout(
+        yaxis=dict(
+            autorange="reversed",
+            showgrid=False,
+            zeroline=False,
+            visible=False,
+            scaleanchor="x",
+        ),
+        xaxis=dict(showgrid=False, zeroline=False, visible=False),
+        paper_bgcolor="rgba(255,255,255,0)",
+        plot_bgcolor="rgba(255,255,255,0)",
+    )
+
+    return fig

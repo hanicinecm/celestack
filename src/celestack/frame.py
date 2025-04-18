@@ -5,11 +5,11 @@ from typing import Literal
 import numpy as np
 import yaml
 from plotly import graph_objects as go
-from scipy.ndimage import median_filter
 
 import celestack._discovery as discovery
 import celestack._utils as utils
 from celestack import progress_bar
+from celestack.segment import Segment, SegmentBox
 
 
 class _Frame:
@@ -206,31 +206,14 @@ class _Frame:
         self.compressed_path.unlink(missing_ok=True)
         discovery.get_frame_state_path(self.project, self.name).unlink(missing_ok=True)
 
-    def plot(self, array: np.ndarray | None = None) -> go.Figure:
+    def plot(self) -> go.Figure:
         """
-        A method to plot the compressed image by default, or any other image array into
-        a standardly styled Plotly figure.
-
-        Args:
-            array: The image array to plot. If None, the compressed image will be used.
-                Default is None.
+        A method to plot the compressed image into a standardly styled Plotly figure.
 
         Returns:
-            A Plotly figure containing the image (by default the compressed image).
+            A Plotly figure containing the compressed image.
         """
-        if array is None:
-            array = self.compressed_array
-        fig = go.Figure(data=go.Heatmap(z=array, colorscale="gray", showscale=False))
-        fig.update_layout(
-            yaxis=dict(
-                autorange="reversed", showgrid=False, zeroline=False, visible=False
-            ),
-            xaxis=dict(showgrid=False, zeroline=False, visible=False),
-            paper_bgcolor="rgba(255,255,255,0)",
-            plot_bgcolor="rgba(255,255,255,0)",
-        )
-
-        return fig
+        return utils.plot_image(self.compressed_array)
 
 
 class DarkFrame(_Frame):
@@ -323,64 +306,22 @@ class LightFrame(_Frame):
             raise ValueError("Mask is not set.")
         return Mask.from_state(self.project, self.mask_name)
 
-    def extract_segment(
-        self,
-        ranges: tuple[int, int, int, int],
-        med_filter_size: int = 1,
-        threshold: int | Literal["auto"] | None = None,
-    ) -> np.ndarray:
+    def get_segment(self, box: SegmentBox) -> Segment:
         """
-        Returns a rectangular segment of the compressed array as a float32 array.
-
-        If a mask is defined, the foreground pixels are set to NaN.
-        Optionally applies median filtering for noise reduction.
+        Returns a Segment object representing the rectangular segment of the sky
+        portion of the light frame.
 
         Args:
-            ranges: A tuple (x1, y1, x2, y2) specifying the segment.
-            med_filter_size: The size of the median filter kernel. Default is 1 (no
-                filtering). If set to 3, a 3x3 median filter will be applied.
-            threshold: If a threshold is set, the segment will be thresholded to the
-                given threshold and the segment values will be set to 0 below the
-                threshold and to 1 above the threshold. If set to "auto", the method
-                will attempt to optimize the threshold value based on the image data.
-                Default is None (no thresholding and the segment will contain the
-                original pixel values, just in the float32 data type).
+            box: The SegmentBox object defining the segment bounding box.
 
         Returns:
-            A float32 NumPy array of the segment, with masked-out pixels set to NaN if
-            a mask is assigned.
+            A Segment object representing the rectangular segment of the light frame.
         """
-        # Extract the ranges:
-        x1, y1, x2, y2 = ranges
-        segment = self.compressed_array[y1:y2, x1:x2].astype(np.float32)
-
-        # Apply the median filter, if requested:
-        if med_filter_size > 1:
-            segment = median_filter(segment, size=med_filter_size)
-
-        # Apply the foreground mask, if set:
+        segment_array = self.compressed_array[box.y1 : box.y2, box.x1 : box.x2]
+        mask = None
         if self.mask_name is not None:
-            mask_segment = self.mask.mask_array[y1:y2, x1:x2]
-            segment = np.where(mask_segment, segment, np.nan)
-
-        # Apply the thresholding, if requested:
-        if threshold is not None:
-            raise NotImplementedError("Thresholding is not implemented yet.")
-
-        return segment
-
-    def plot_segment(self, *args, **kwargs) -> go.Figure:
-        """
-        Plots a rectangular segment of the compressed image.
-
-        Accepts the same arguments as the `get_segment` method, but returns a Plotly
-        figure instead of a NumPy array.
-
-        Returns:
-            A Plotly figure containing the segment.
-        """
-        array = self.extract_segment(*args, **kwargs)
-        return super(LightFrame, self).plot(array)
+            mask = self.mask.mask_array[box.y1 : box.y2, box.x1 : box.x2]
+        return Segment(box=box, array=segment_array, mask=mask)
 
 
 class Mask(_Frame):
