@@ -1,10 +1,11 @@
 from dataclasses import dataclass
 
 import numpy as np
+import pandas as pd
 import plotly.graph_objects as go
 from astropy.stats import mad_std
-from astropy.table import Table
 from photutils.detection import DAOStarFinder
+from scipy.spatial import distance_matrix
 
 import celestack._utils as utils
 
@@ -60,7 +61,7 @@ class Segment:
         self.mask = mask
 
         # Define stubs for the properties
-        self.stars_table: Table | None = None
+        self.stars_table: pd.DataFrame | None = None
 
     @property
     def array(self) -> np.ndarray:
@@ -73,36 +74,87 @@ class Segment:
             array[~self.mask] = 0
         return array
 
-    def find_stars(self, n: int = 50) -> None:
+    def find_stars(
+        self, n: int = 50, fwhm: float = 4.0, start_threshold: float = 4.0
+    ) -> float:
         """
-        Finds stars in the segment using the `array` and assigns the result to
-        `self.stars_table`.
+        Finds stars in the segment and save the result to `self.stars_table`.
+
+        The stars are found using the DAOStarFinder algorithm from the photutils
+        library, and the method intelligently adjusts the algorithm's threshold to find
+        the specified number of stars `n`.
+
+        Non-round stars are rejected from the table.
+        Also, stars that are too close to other stars are rejected - this happens as
+        the very last step, therefore the final number of stars may be (and most likely
+        will be) less than `n`.
+
+        Args:
+            n: The target number of stars to find. Defaults to 50.
+            fwhm: The full width at half maximum (FWHM) of the stars. Defaults to 4.0.
+            start_threshold: The starting threshold for the star finding algorithm, in
+                the units of the background noise. Defaults to 4.0. This is the value
+                which is iteratively adjusted to find the target number of stars.
+
+        Returns:
+            The final threshold used for the star finding algorithm.
         """
         # Calculate the background noise using the median absolute deviation (MAD)
         bkg_mad = mad_std(self._array)
 
         # Find the stars:
-        # TODO: I will want to iteratively home in on the correct threshold / fwhm to
-        #   get the right number of sources - e.g. 2 or 3 times more than the final
-        #   number I want
-        daofind = DAOStarFinder(fwhm=3.0, threshold=3 * bkg_mad)
-        stars = daofind(self.array)
+        # Start with the `start_threshold * bkg_mad` threshold and iterate the threshold
+        # until we find close to `2n` stars:
+        stars = None
+        target_n = 2 * n
+        delta_n = None
+        thresh = start_threshold
+        thresh_incr = 0.2
+        while True:
+            # find the stars:
+            daofind = DAOStarFinder(fwhm=fwhm, threshold=thresh * bkg_mad)
+            new_stars = daofind(self.array)
+            # how far are we from the target number of stars?
+            new_delta_n = len(new_stars) - target_n
+            if delta_n is not None and abs(new_delta_n) >= abs(delta_n):
+                # we're further away from target than in the last iteration - stop...
+                break
+            delta_n = new_delta_n
+            stars = new_stars
+            # adjust the threshold for the next iteration:
+            thresh += thresh_incr if new_delta_n > 0 else -thresh_incr
+
+        # convert the optimized stars table to a pandas DataFrame:
+        assert stars is not None
+        stars = stars.to_pandas().set_index("id", drop=True)
+
+        # Get rid of all the uninsteresing columns in the stars table:
+        stars.drop(columns=["npix", "mag", "daofind_mag"], inplace=True)
 
         # Reject stars that are too non-round:
         MAX_ROUNDNESS = 0.85
-        stars = stars[np.abs(stars["roundness2"]) <= MAX_ROUNDNESS]
+        stars = stars[stars.roundness2.abs() <= MAX_ROUNDNESS]
 
-        # Set the threshold flux to get the right number of stars:
+        # Set the threshold flux to get exactly `n` stars:
+        distance_thresh = 2 * fwhm
         if len(stars) > n:
             threshold_flux = sorted(stars["flux"])[-n]
-            stars = stars[stars["flux"] >= threshold_flux]
+            stars = stars[stars.flux >= threshold_flux]
 
-        # TODO: Reject all the sources which have another source too close (e.g. within
-        #   2*FWHM) - I need this to guard against possible swaps in registering the
-        #   stars across frames.
+        # Reject all the stars which have another star too close:
+        dist_matrix = distance_matrix(
+            stars[["xcentroid", "ycentroid"]].values,
+            stars[["xcentroid", "ycentroid"]].values,
+        )
+        np.fill_diagonal(dist_matrix, np.inf)
+        too_close_iloc = np.where(dist_matrix.min(axis=0) < distance_thresh)[0]
+        too_close_ids = stars.index[too_close_iloc]
+        stars = stars[~stars.index.isin(too_close_ids)]
 
         # Set the stars table:
         self.stars_table = stars
+
+        return thresh
 
     def plot(self) -> go.Figure:
         """
