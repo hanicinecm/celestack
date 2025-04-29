@@ -38,6 +38,11 @@ class _Frame:
     # `from_state` method.
     NON_STATE_ATTRS = {"project", "name"}
 
+    # The following are the wrappings that need to be done on attributes when dumping
+    # to the YAML state file and loading from it:
+    NATIVE_TO_YAML = {"shape": list}
+    YAML_TO_NATIVE = {"shape": tuple}
+
     def __init__(
         self,
         project: str,
@@ -96,9 +101,9 @@ class _Frame:
         self.name = name
         self.original_path = str(img_path) if img_path else None
 
-        # The attributes describing the original image:
+        # The attributes describing the image:
         self.exif_data = utils.read_exif_data(img_path) if img_path else {}
-        self.shape: list[int] = list(img_array.shape)
+        self.shape: tuple[int, ...] = img_array.shape
         self.dtype = str(img_array.dtype.name)
         self.bit_depth = utils.get_bit_depth(img_array)
 
@@ -171,6 +176,9 @@ class _Frame:
             for key, value in self.__dict__.items()
             if key not in self.NON_STATE_ATTRS
         }
+        for key, func in self.NATIVE_TO_YAML.items():
+            if key in state:
+                state[key] = func(state[key])
         state_path = discovery.get_frame_state_path(self.project, self.name)
         with open(state_path, "w") as state_file:
             yaml.dump(state, state_file, default_flow_style=False)
@@ -193,6 +201,9 @@ class _Frame:
         with open(state_path, "r") as state_file:
             state = yaml.safe_load(state_file)
         state |= {"project": project, "name": name}
+        for key, func in cls.YAML_TO_NATIVE.items():
+            if key in state:
+                state[key] = func(state[key])
 
         # Create the instance from the state:
         instance = cls.__new__(cls)
@@ -329,7 +340,7 @@ class Mask(_Frame):
     A class representing a mask frame in a celestack project.
 
     A Mask is a special kind of Frame, which expects the passed image to be a binary
-    mask, where white pixels are the sky, while the black pixels are the foreground.
+    mask, where white pixels are the foreground, while the black pixels are the sky.
     """
 
     def __init__(
@@ -360,8 +371,8 @@ class Mask(_Frame):
         """
         Returns the binary mask as a NumPy array with boolean datatype.
 
-        The mask is a 2D array, where True values represent the sky and False values
-        represent the foreground.
+        The mask is a 2D array, where True values represent the foreground (to be masked
+        out) and False values represent the sky.
         """
         return self.compressed_array.astype(bool)
 

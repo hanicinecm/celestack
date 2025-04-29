@@ -25,6 +25,19 @@ class SegmentBox:
     x2: int
     y2: int
 
+    def shift(self, dx: int, dy: int) -> "SegmentBox":
+        """
+        Shifts the box by the given dx and dy.
+
+        Args:
+            dx: The shift in the x direction.
+            dy: The shift in the y direction.
+
+        Returns:
+            A new SegmentBox object with the shifted coordinates.
+        """
+        return SegmentBox(self.x1 + dx, self.y1 + dy, self.x2 + dx, self.y2 + dy)
+
 
 class Segment:
     """
@@ -54,28 +67,18 @@ class Segment:
             array: The pixel array representing the segment - must be 2D uint8.
             mask: Optional mask array for the segment. Defaults to None. If provided,
                 it must have the same shape as the `array` and should be a boolean
-                type.
+                type, with True values indicating the foreground pixels to be masked
+                out.
         """
         self.box = box
-        self._array = array
+        self.array = array
         self.mask = mask
 
         # Define stubs for the properties
         self.stars_table: pd.DataFrame | None = None
 
-    @property
-    def array(self) -> np.ndarray:
-        """
-        Returns the pixel array of the segment. If the mask is assigned, all the masked
-        pixels are set to zero.
-        """
-        array = self._array
-        if self.mask is not None:
-            array[~self.mask] = 0
-        return array
-
     def find_stars(
-        self, n: int = 50, fwhm: float = 4.0, start_threshold: float = 4.0
+        self, n: int = 100, fwhm: float = 4.0, start_threshold: float = 4.0
     ) -> float:
         """
         Finds stars in the segment and save the result to `self.stars_table`.
@@ -98,24 +101,26 @@ class Segment:
 
         Returns:
             The final threshold used for the star finding algorithm.
+
+        TODO: The number of stars should be set relative to number of sky pixels in the
+            segment.
         """
         # Calculate the background noise using the median absolute deviation (MAD)
-        bkg_mad = mad_std(self._array)
+        bkg_mad = mad_std(self.array)
 
         # Find the stars:
         # Start with the `start_threshold * bkg_mad` threshold and iterate the threshold
-        # until we find close to `2n` stars:
+        # until we find close to `n` stars:
         stars = None
-        target_n = 2 * n
         delta_n = None
         thresh = start_threshold
         thresh_incr = 0.2
         while True:
             # find the stars:
             daofind = DAOStarFinder(fwhm=fwhm, threshold=thresh * bkg_mad)
-            new_stars = daofind(self.array)
+            new_stars = daofind(data=self.array, mask=self.mask)
             # how far are we from the target number of stars?
-            new_delta_n = len(new_stars) - target_n
+            new_delta_n = len(new_stars) - n
             if delta_n is not None and abs(new_delta_n) >= abs(delta_n):
                 # we're further away from target than in the last iteration - stop...
                 break
@@ -135,13 +140,8 @@ class Segment:
         MAX_ROUNDNESS = 0.85
         stars = stars[stars.roundness2.abs() <= MAX_ROUNDNESS]
 
-        # Set the threshold flux to get exactly `n` stars:
-        distance_thresh = 2 * fwhm
-        if len(stars) > n:
-            threshold_flux = sorted(stars["flux"])[-n]
-            stars = stars[stars.flux >= threshold_flux]
-
         # Reject all the stars which have another star too close:
+        distance_thresh = 2 * fwhm
         dist_matrix = distance_matrix(
             stars[["xcentroid", "ycentroid"]].values,
             stars[["xcentroid", "ycentroid"]].values,
