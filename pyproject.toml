@@ -29,6 +29,7 @@ build-backend = "hatchling.build"
 
 [dependency-groups]
 dev = [
+    "icecream>=2.1.4",
     "jupyter>=1.1.1",
     "scikit-learn>=1.6.1",
 ]
