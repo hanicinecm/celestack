@@ -1,3 +1,3 @@
-from rich.progress import track
+from tqdm import tqdm
 
-progress_bar = track
+PROGRESS_BAR = tqdm

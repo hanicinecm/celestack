@@ -74,3 +74,18 @@ def get_frame_state_path(project_name: str, frame_name: str) -> Path:
         The path to the YAML file for the specified frame.
     """
     return get_project_frames_dir(project_name) / f"{frame_name}.yaml"
+
+
+def get_stack_state_path(project_name: str) -> Path:
+    """
+    Returns the path to the YAML file for the Stack state in a Celestack project.
+
+    The YAML file contains the state of the Stack class belonging to the project.
+
+    Args:
+        project_name: The name of the project.
+
+    Returns:
+        The path to the YAML file for the state of the project stack.
+    """
+    return get_project_dir(project_name) / "Stack.yaml"

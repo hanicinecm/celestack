@@ -5,14 +5,15 @@ from typing import Literal
 import numpy as np
 import yaml
 from plotly import graph_objects as go
+from sklearn.cluster import KMeans
 
 import celestack._discovery as discovery
 import celestack._utils as utils
-from celestack import progress_bar
+from celestack import PROGRESS_BAR
 from celestack.segment import Segment, SegmentBox
 
 
-class _Frame:
+class Frame:
     """
     A base class representing a frame in a celestack project.
     This base class is designed to be used as a base class for multitude of concrete
@@ -112,7 +113,7 @@ class _Frame:
         # Dump the state of the instance:
         self.dump_state()
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f"{self.__class__.__name__}({self.name})"
 
     @property
@@ -151,8 +152,8 @@ class _Frame:
 
     def update_image(self, img_array: np.ndarray) -> None:
         """
-        Updates the full-quality image and the compressed image copies in the project
-        folder.
+        Updates the copies of the full-quality image and the compressed image in the
+        project folder.
 
         The method will overwrite the existing images in the project folder, but it will
         never touch the original image.
@@ -227,7 +228,7 @@ class _Frame:
         return utils.plot_image(self.compressed_array)
 
 
-class DarkFrame(_Frame):
+class DarkFrame(Frame):
     """
     A class representing a dark frame in a celestack project.
 
@@ -247,7 +248,7 @@ class DarkFrame(_Frame):
         super().__init__(project=project, name=name, img_path=img_path)
 
 
-class LightFrame(_Frame):
+class LightFrame(Frame):
     """
     A class representing a light frame in a celestack project.
 
@@ -335,7 +336,7 @@ class LightFrame(_Frame):
         return Segment(box=box, array=segment_array, mask=mask)
 
 
-class Mask(_Frame):
+class Mask(Frame):
     """
     A class representing a mask frame in a celestack project.
 
@@ -356,7 +357,7 @@ class Mask(_Frame):
                 raise ValueError("The mask array must be a 2D array.")
             if not np.array_equal(img_array, img_array.astype(bool)):
                 raise ValueError("The mask array must be a boolean array.")
-            # Make it into a 8bit grayscale image, to conform with the _Frame class:
+            # Make it into a 8bit grayscale image, to conform with the Frame class:
             img_array = img_array.astype(np.uint8) * 255
 
         super().__init__(
@@ -377,12 +378,14 @@ class Mask(_Frame):
         return self.compressed_array.astype(bool)
 
 
-class AverageFrame(_Frame):
+class AverageFrame(Frame):
     """
     A class used to average multiple frames together into a new frame.
 
     This is just a plain averaging, without taking into account any alignment or
     transformations.
+
+    This class is used as a base class for the MasterDark and AverageLight classes.
     """
 
     def __init__(
@@ -433,12 +436,18 @@ class AverageFrame(_Frame):
         shape = frames[0].shape
         bit_depth = frames[0].bit_depth
         dtype = frames[0].dtype
+        if isinstance(frames[0], LightFrame):
+            frame_type = "light frame"
+        elif isinstance(frames[0], DarkFrame):
+            frame_type = "dark frame"
+        else:
+            raise ValueError("The frames must be either LightFrame or DarkFrame.")
 
         if avg_func == "mean":
             # Mean is easy - just keep the rolling sum and normalize at the end:
             sum_array = np.zeros(shape=shape, dtype=np.float32)
 
-            for frame in progress_bar(frames, "Averaging frames"):
+            for frame in PROGRESS_BAR(frames, f"Averaging {frame_type}s"):
                 sum_array += frame.image_array / (2**frame.bit_depth - 1)
 
             avg_array = (sum_array / len(frames) * (2**bit_depth - 1)).astype(dtype)
@@ -458,7 +467,7 @@ class AverageFrame(_Frame):
 
             # Build the average array chunk-by-chunk:
             slices = [slice(i, None, n) for i in range(n)]
-            for slc in progress_bar(slices, "Averaging frames"):
+            for slc in PROGRESS_BAR(slices, f"Averaging {frame_type}s"):
                 # Get the chunks of each of the images and stack them together:
                 chunk_stack = None
                 # chunk_stack = np.empty((len(frames), *shape[slc]), dtype=dtype)
@@ -487,8 +496,161 @@ class MasterDark(AverageFrame):
     multiple DarkFrames.
 
     The MasterDark class is a subclass of the AverageFrame class, and it inherits all
-    the attributes and methods of the AverageFrame and _Frame classes.
+    the attributes and methods of the AverageFrame and Frame classes.
     """
 
     def __init__(self, project: str, name: str, frames: list[DarkFrame]):
         super().__init__(project=project, name=name, frames=frames, avg_func="median")
+
+
+class AverageLight(AverageFrame):
+    """
+    A class representing an average light frame in a celestack project.
+
+    An AverageLight is a special kind of AverageFrame, which wraps around the average of
+    multiple LightFrames.
+
+    The AverageLight class is a subclass of the AverageFrame class, and it inherits all
+    the attributes and methods of the AverageFrame and Frame classes.
+
+    On top of that, it defines functionality to create a Mask from the average light
+    frame, by the means of pixels clustering, and more manually by explicitly masking
+    and/or unmasking rectangular areas of the image.
+    """
+
+    NON_STATE_ATTRS = AverageFrame.NON_STATE_ATTRS | {"clusters_array", "mask_array"}
+
+    def __init__(self, project: str, name: str, frames: list[LightFrame]):
+        """
+        Initializes the AverageLight frame.
+
+        The constructor will create a new frame by averaging the passed frames together
+        and saving the result to the project folder.
+
+        Args:
+            project: The name of the project to which this frame belongs.
+            name: The name of the frame. This is assigned by the project and usually
+                corresponds to the name of the original image.
+            frames: A list of LightFrames to average together.
+        """
+        # The mask-creating functionality will need some extra temporary attributes
+        # which will not be persisted in the state file:
+        self.clusters_array: np.ndarray | None = None  # uint8 array of int clusters
+        self.mask_array: np.ndarray | None = None  # bool array - foreground is True
+
+        super().__init__(project=project, name=name, frames=frames, avg_func="median")
+
+    def cluster_pixels(self, n_clusters: int) -> None:
+        """
+        This method will cluster the pixels in the original image in the relevant
+        feature space, to separate the sky pixels from the foreground pixels.
+
+        The feature space is defined as the RGB values of the pixels, plus their
+        coordinates in the image.
+        The clustering is done using the K-Means algorithm.
+
+        The output of the method is a uint8 array of the same widht and height as the
+        original image, with integer indices as the cluster labels.
+        The clusters are labeled in the way that the cluster with the lower labels
+        should generally correspond to the foreground pixels.
+        """
+        array = self.image_array  # The full quality average array
+        h, w, c = array.shape
+
+        # Treat the RGB channels & pixel coordinates as features:
+        features = array.reshape(-1, c)  # array of RGB values
+        features = features.astype(np.float32)
+        # Add the pixel coordinates:
+        x_coords = np.tile(np.arange(w), h).astype(np.float32)
+        y_coords = np.repeat(np.arange(h), w).astype(np.float32)
+        features = np.column_stack((features, x_coords, y_coords))
+        # Normalize the features:
+        for i in range(features.shape[1]):
+            features[:, i] -= np.mean(features[:, i])
+            features[:, i] /= np.std(features[:, i])
+        # Reverse the Y-axis coordinates feature, so that higher Y values (bottom of
+        # the image) have smaller feature values (will help with interpretting the
+        # clusters - lower cluster average means likely foreground):
+        features[:, -1] = -features[:, -1]
+
+        # Apply K-Means clustering
+        kmeans = KMeans(n_clusters=n_clusters, random_state=42)
+        labels = kmeans.fit_predict(features)
+
+        # Relabel the clusters so they are in order of their mean values:
+        cluster_means = np.mean(kmeans.cluster_centers_, axis=1)
+        sorted_indices = np.argsort(cluster_means)
+        new_labels = np.zeros_like(labels)
+        for new_label, old_label in enumerate(sorted_indices):
+            new_labels[labels == old_label] = new_label
+        labels = new_labels
+
+        # Store the clusters array:
+        self.clusters_array = labels.reshape(h, w).astype(np.uint8)
+
+    def initialize_mask(self, foreground_cluster_labels: list[int]) -> None:
+        """
+        Initializes the mask array based on the clusters array.
+
+        The method will take the list of foreground cluster labels and turn the
+        clusters array into a boolean mask, with the foreground pixels set to True.
+
+        The initialized mask will be stored in the `mask_array` attribute.
+
+        Args:
+            foreground_cluster_labels: A list of cluster labels that should be
+                considered as foreground.
+        """
+        if self.clusters_array is None:
+            raise ValueError("Clusters array is not initialized.")
+        self.mask_array = np.isin(self.clusters_array, foreground_cluster_labels)
+
+    def set_mask_in_box(
+        self,
+        value: bool,
+        x1: int | None,
+        x2: int | None,
+        y1: int | None,
+        y2: int | None,
+    ) -> None:
+        """
+        Set the mask in a rectangular box.
+
+        The method will set the pixels in the specified rectangular area to True in the
+        mask array.
+
+        Args:
+            value: The value to set the mask to. If True, the pixels will be masked
+                (foreground), if False, they will be unmasked (sky).
+            x1: The left X coordinate of the box. Optional.
+            x2: The right X coordinate of the box. Optional.
+            y1: The top Y coordinate of the box. Optional.
+            y2: The bottom Y coordinate of the box. Optional.
+        """
+        if self.mask_array is None:
+            raise ValueError("Mask array is not initialized.")
+        self.mask_array[slice(y1, y2), slice(x1, x2)] = value
+
+    def create_mask(self, name: str) -> Mask:
+        """
+        Creates a mask frame from the average light frame.
+
+        The method will create a new Mask object from the mask array and save it to the
+        project folder.
+
+        Args:
+            name: The name of the mask frame. This is how the mask is referenced within
+                the project.
+
+        Returns:
+            A Mask object representing the mask frame. The mask is also saved in the
+            project
+        """
+        if self.mask_array is None:
+            raise ValueError("Mask array is not initialized.")
+        mask = Mask(
+            project=self.project,
+            name=name,
+            img_array=self.mask_array,
+        )
+        return mask
