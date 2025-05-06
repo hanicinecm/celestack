@@ -588,6 +588,20 @@ class AverageLight(AverageFrame):
         # Store the clusters array:
         self.clusters_array = labels.reshape(h, w).astype(np.uint8)
 
+    def plot_clusters(self) -> go.Figure:
+        """
+        Plots the clusters array as a Plotly figure.
+
+        The method will create a Plotly figure containing the clusters array, with
+        different colors for each cluster.
+
+        Returns:
+            A Plotly figure containing the clusters array.
+        """
+        if self.clusters_array is None:
+            raise ValueError("Clusters array is not initialized.")
+        return utils.plot_image(self.clusters_array)
+
     def initialize_mask(self, foreground_cluster_labels: list[int]) -> None:
         """
         Initializes the mask array based on the clusters array.
@@ -608,10 +622,10 @@ class AverageLight(AverageFrame):
     def set_mask_in_box(
         self,
         value: bool,
-        x1: int | None,
-        x2: int | None,
-        y1: int | None,
-        y2: int | None,
+        x1: int | None = None,
+        x2: int | None = None,
+        y1: int | None = None,
+        y2: int | None = None,
     ) -> None:
         """
         Set the mask in a rectangular box.
@@ -631,7 +645,7 @@ class AverageLight(AverageFrame):
             raise ValueError("Mask array is not initialized.")
         self.mask_array[slice(y1, y2), slice(x1, x2)] = value
 
-    def create_mask(self, name: str) -> Mask:
+    def create_mask(self, name: str = "Mask") -> Mask:
         """
         Creates a mask frame from the average light frame.
 
