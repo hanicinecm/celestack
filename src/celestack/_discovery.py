@@ -89,3 +89,21 @@ def get_stack_state_path(project_name: str) -> Path:
         The path to the YAML file for the state of the project stack.
     """
     return get_project_dir(project_name) / "Stack.yaml"
+
+
+def get_stars_table_path(project_name: str) -> Path:
+    """
+    Returns the path to the CSV file for the stars table belonging to the FrameStack
+    in a Celestack project.
+
+    The CSV file contains the stars table, which is a list of stars across the frames,
+    with data such as image coordinates, flux, unique IDs, which frame they belong to,
+    and other data.
+
+    Args:
+        project_name: The name of the project.
+
+    Returns:
+        The path to the CSV file for the stars table.
+    """
+    return get_project_dir(project_name) / "Stars.csv"

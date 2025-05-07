@@ -3,13 +3,12 @@ This module contains the FrameStack class, which is used to manage a stack of fr
 
 Each stack is referenced only by the project name, as only a single stack is allowed
 per project.
-
-TODO: Move segmentation and stars plotting from `project` module here...
 """
 
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import plotly.graph_objects as go
 import yaml
 
@@ -27,6 +26,12 @@ class FrameStack:
     def __init__(self, project: str):
         """
         Initializes the FrameStack object.
+
+        The stack takes care of the dark-frame correction, foreground masking and
+        ultimately the star detection.
+
+        The stars (once detected) are stored in the `stars_table` attribute as a
+        DataFrame.
 
         Args:
             project: The name of the project.
@@ -48,6 +53,8 @@ class FrameStack:
         self.mask: Mask | None = None
 
         self.segment_boxes: list[SegmentBox] = []
+
+        self.stars_table: pd.DataFrame | None = None
 
         # Dump the initial state of the stack to the state file:
         self.dump_state()
@@ -211,7 +218,8 @@ class FrameStack:
         # Basic sanity checks:
         if self.mask is None:
             raise ValueError("Stack does not contain a mask.")
-        # TODO: Check if any stars have already been detected.
+        if self.stars_table is not None:
+            raise ValueError("Stars have already been detected in the stack.")
 
         segment_boxes: list[SegmentBox] = []
 
@@ -299,14 +307,86 @@ class FrameStack:
             raise ValueError(
                 f"Reference frame '{ref_frame_name}' does not belong to the stack."
             )
-        # TODO: Check if any stars have already been detected.
+        if self.stars_table is not None:
+            raise ValueError("Stars have already been detected in the stack.")
 
         # Set the reference frame and save it into the project:
         self.ref_frame = self.light_frames[ref_frame_name]
         self.dump_state()
 
-    def detect_stars(self) -> None:
-        raise NotImplementedError("Detecting stars is not implemented yet.")
+    def detect_stars_in_ref_frame(self, n: int = 500, fwhm: float = 4.0) -> None:
+        """
+        A method to detect (close to) N stars in a single frame.
+
+        The algorithm will go from segment to segment (the sky must have been segmented
+        already) and detect an appropriate number of stars in each segment, to reach
+        the target `n` stars in the whole frame.
+
+        The stars detection happens in a single frame only, typically in the reference
+        frame, and it is the first step in the stars registration and alignment process.
+
+        The stars are stored (persistently) in the `stars_table` DataFrame.
+
+        Args:
+            n: The target number of stars to detect in the whole frame. Optional, if
+                not passed, a sensible default is provided.
+            fwhm: The FWHM of the stars in [px]. This is an important parameter of the
+                low-level detection algorithm and might need to be tweaked for each
+                given project, depending on the lens, exposition, etc. Defaults to 4.0.
+
+        Raises:
+            ValueError: If the stars table exists already and contains stars from more
+                then one frame.
+            ValueError: If the sky has not yet been segmented.
+            ValueError: If the frame name passed does not belong to the stack.
+            ValueError: If the frame name is not passed and the reference frame has
+                not yet been set.
+        """
+        # Basic sanity checks:
+        if self.stars_table is not None and len(self.stars_table.frame.unique()) > 1:
+            raise ValueError(
+                "Stars have already been detected in the stack for more than one frame."
+            )
+        if not self.segment_boxes:
+            raise ValueError("Sky has not yet been segmented.")
+        if self.ref_frame is None:
+            raise ValueError("Reference frame has not yet been set.")
+
+        frame = self.ref_frame
+
+        # Detect the stars in the frame:
+        n_per_segment = n // len(self.segment_boxes)
+        threshold = 4.0  # initial threshold for the star finding algorithm
+        segment_tables: list[pd.DataFrame] = []
+        for box in PROGRESS_BAR(self.segment_boxes, f"Detecting stars in {frame.name}"):
+            # Get the segment:
+            segment = frame.get_segment(box)
+            # Find stars in the segment:
+            segment_table = segment.find_stars(
+                n=n_per_segment, fwhm=fwhm, init_thresh=threshold
+            )
+            # Update the initial threshold for the next segment:
+            threshold = round(float(segment_table["threshold"].iloc[0]), 9)
+            # Add the segment table to the list:
+            segment_tables.append(segment_table)
+
+        # Concatenate the segment tables into a single table:
+        stars_table = pd.concat(segment_tables, ignore_index=True)
+
+        # Add the frame metadata to the stars table:
+        stars_table["frame"] = frame.name
+
+        # Assign unique IDs to the stars:
+        stars_table["id"] = np.arange(len(stars_table))
+
+        # Sort the columns in the stars table:
+        cols = ["id", "frame", "x", "y", "flux", "threshold", "fwhm"]
+        assert set(cols) == set(stars_table.columns), "Defensive programming."
+        stars_table = stars_table[cols]
+
+        # Store the stars table in the stack:
+        self.stars_table = stars_table
+        self.dump_state()
 
     def dump_state(self) -> None:
         """
@@ -333,6 +413,11 @@ class FrameStack:
         state_path = discovery.get_stack_state_path(self.project)
         with open(state_path, "w") as state_file:
             yaml.dump(state, state_file, default_flow_style=False)
+
+        # The stars table is stored as a CSV file, instead of the state file:
+        if self.stars_table is not None:
+            stars_path = discovery.get_stars_table_path(self.project)
+            self.stars_table.to_csv(stars_path, index=False)
 
     @classmethod
     def from_state(cls, project: str) -> "FrameStack":
@@ -369,16 +454,24 @@ class FrameStack:
         state["segment_boxes"] = [
             SegmentBox(x1, y1, x2, y2) for x1, y1, x2, y2 in state["segment_boxes"]
         ]
+        # Add the stars table to the state:
+        state["stars_table"] = None
 
         # Create the FrameStack object:
         stack = cls.__new__(cls)
         stack.__dict__.update(state)
+
+        # Load the stars table from the CSV file, if it exists:
+        stars_path = discovery.get_stars_table_path(project)
+        if stars_path.exists():
+            stack.stars_table = pd.read_csv(stars_path)
 
         return stack
 
     def clear(self) -> None:
         """A method to remove all the traces of the stack from the project folder."""
         discovery.get_stack_state_path(self.project).unlink(missing_ok=True)
+        discovery.get_stars_table_path(self.project).unlink(missing_ok=True)
 
     def plot(self, frame: Frame | None = None) -> go.Figure:
         """
@@ -442,23 +535,23 @@ class FrameStack:
                 )
             )
 
-        # Add the stars to the plot:
-        # TODO: Implement the stars plotting.
-        # if stars:
-        #     fig.add_trace(
-        #         go.Scatter(
-        #             x=stars["x"],
-        #             y=stars["y"],
-        #             mode="markers",
-        #             marker=dict(
-        #                 size=stars["flux"] / np.max(stars["flux"]) * 10,
-        #                 color=stars["flux"],
-        #                 colorscale="Viridis",
-        #             ),
-        #             name="Stars",
-        #         )
-        #     )
+        # Add the stars to the plot, if any are detected for the selected frame:
+        if self.stars_table is not None:
+            stars = self.stars_table[self.stars_table["frame"] == frame.name]
+            fig.add_trace(
+                go.Scatter(
+                    x=stars["x"],
+                    y=stars["y"],
+                    mode="markers",
+                    marker=dict(
+                        size=stars["flux"] / np.max(stars["flux"]) * 10,
+                        color=stars["flux"],
+                        colorscale="Viridis",
+                    ),
+                    name="Stars",
+                )
+            )
 
-        #     fig.update_layout(showlegend=True)
+            fig.update_layout(showlegend=True)
 
         return fig

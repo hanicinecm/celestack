@@ -2,9 +2,12 @@ from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
+import plotly.graph_objects as go
 from astropy.stats import mad_std
 from photutils.detection import DAOStarFinder
 from scipy.spatial import distance_matrix
+
+import celestack._utils as utils
 
 
 @dataclass(frozen=True)
@@ -78,8 +81,8 @@ class Segment:
     def find_stars(
         self,
         n: int,
+        fwhm: float,
         init_thresh: float = 4.0,
-        fwhm: float = 4.0,
     ) -> pd.DataFrame:
         """
         Finds stars in the segment and return them in a pandas DataFrame table.
@@ -103,12 +106,13 @@ class Segment:
 
         Args:
             n: The number of stars we want to find in the segment.
+            fwhm: The full width at half maximum (FWHM) of the stars in [px].
+                This is one of the parameters of the star finding algorithm and might
+                have to be adjusted for each project.
             init_thresh: The starting threshold for the star finding algorithm, in the
                 number of standard deviations of the typical bacground noise.
                 This is treated only as an initial guess, and the algorithm will adjust
                 this to get to the target `n`.
-                Optional, if not passed, a sensible default is provided.
-            fwhm: The full width at half maximum (FWHM) of the stars in [px].
                 Optional, if not passed, a sensible default is provided.
 
         Returns:
@@ -132,15 +136,26 @@ class Segment:
         thresh = init_thresh
         thresh_incr = 0.2
         target_n = 2 * n  # target number of stars (will be capped later)
+        n_iters_stagnating = 0
         while True:
             # find the stars:
             daofind = DAOStarFinder(fwhm=fwhm, threshold=thresh * bkg_mad)
             new_sources = daofind(data=self.array, mask=self._mask)
             # how far are we from the target number of sources?
             new_delta_n = len(new_sources) - target_n
-            if delta_n is not None and abs(new_delta_n) >= abs(delta_n):
+            if delta_n is not None and abs(new_delta_n) > abs(delta_n):
                 # we're further away from target than in the last iteration - stop...
                 break
+            elif delta_n is not None and abs(new_delta_n) == abs(delta_n):
+                # we're not getting closer to the target, but we don't want to stop
+                # right away...
+                n_iters_stagnating += 1
+                if n_iters_stagnating > 3:
+                    # ... so we stop after 3 iterations of stagnation
+                    break
+            else:
+                n_iters_stagnating = 0
+
             delta_n = new_delta_n
             _sources = new_sources
             # adjust the threshold for the next iteration:
@@ -192,3 +207,13 @@ class Segment:
         return stars_table[["x", "y", "flux", "fwhm", "threshold"]].reset_index(
             drop=True
         )
+
+    def plot(self) -> go.Figure:
+        """
+        Plot the segment.
+
+        Returns:
+            A Plotly figure object containing the image.
+        """
+        fig = utils.plot_image(self.array)
+        return fig
