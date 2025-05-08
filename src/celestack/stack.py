@@ -13,6 +13,7 @@ import plotly.graph_objects as go
 import yaml
 
 import celestack._discovery as discovery
+import celestack._utils as utils
 from celestack import PROGRESS_BAR
 from celestack.frame import AverageLight, DarkFrame, Frame, LightFrame, Mask, MasterDark
 from celestack.segment import SegmentBox
@@ -53,6 +54,11 @@ class FrameStack:
         self.mask: Mask | None = None
 
         self.segment_boxes: list[SegmentBox] = []
+
+        self.star_finder_params: dict[str, float | None] = {
+            "fwhm": None,  # optimum will be auto-detected.
+            "max_roundness": 1.7,  # stars with higher |roundness| will be rejected.
+        }
 
         self.stars_table: pd.DataFrame | None = None
 
@@ -225,7 +231,7 @@ class FrameStack:
 
         # First, figure out how many pixels we have in the sky:
         ma = self.mask.mask_array  # This is a boolean array with False for sky pixels
-        h, w = self.mask.shape
+        h, _ = self.mask.shape
 
         # Lets define the xmin, xmax of the bounding box of the sky:
         xmin, xmax = np.where(np.sum(ma, axis=0) < h)[0][[0, -1]]
@@ -314,7 +320,86 @@ class FrameStack:
         self.ref_frame = self.light_frames[ref_frame_name]
         self.dump_state()
 
-    def detect_stars_in_ref_frame(self, n: int = 500, fwhm: float = 4.0) -> None:
+    def _find_optimal_fwhm(self) -> float:
+        """
+        A method to find the optimal star FWHM for the star finder.
+
+        The method will pick 5 segments (closest to the center and each corner of the
+        image) and find the FWHM which yields the most stars (with relatively high
+        threshold).
+
+        The average of these values will be considered the optimal FWHM for the
+        star finder and it will be stored (persistently) in the stack's
+        `star_finder_params` dictionary.
+
+        Returns:
+            The optimal FWHM for the star finder.
+
+        Raises:
+            ValueError: If the stack's sky has not yet been segmented.
+            ValueError: If the stack's reference frame has not yet been set.
+        """
+        if not self.segment_boxes:
+            raise ValueError("Sky has not yet been segmented.")
+        if self.ref_frame is None:
+            raise ValueError("Reference frame has not yet been set.")
+
+        # Choose 5 segment boxes in representative locations:
+        w, h = self.ref_frame.width, self.ref_frame.height
+        boxes_x = [(b.x1 + b.x2) / 2 for b in self.segment_boxes]
+        boxes_y = [(b.y1 + b.y2) / 2 for b in self.segment_boxes]
+        boxes_df = pd.DataFrame({"x": boxes_x, "y": boxes_y})
+        for pos, label in zip(
+            [(0, 0), (0, w), (h, 0), (h, w), (h / 2, w / 2)],
+            ["top-left", "top-right", "bottom-left", "bottom-right", "center"],
+        ):
+            boxes_df[f"dist_{label}"] = (
+                (boxes_df["x"] - pos[0]) ** 2 + (boxes_df["y"] - pos[1]) ** 2
+            ) ** 0.5
+        chosen_boxes_idx = [
+            boxes_df["dist_top-left"].idxmin(),
+            boxes_df["dist_top-right"].idxmin(),
+            boxes_df["dist_bottom-left"].idxmin(),
+            boxes_df["dist_bottom-right"].idxmin(),
+            boxes_df["dist_center"].idxmin(),
+        ]
+        chosen_boxes = [self.segment_boxes[int(i)] for i in chosen_boxes_idx]
+
+        # For each chosen segment, find the optimal FWHM:
+        optimal_fwhms = []
+        for box in PROGRESS_BAR(chosen_boxes, "Finding optimal FWHM for star finder"):
+            # Get the segment and some parameters:
+            segment = self.ref_frame.get_segment(box)
+            max_roundness = self.star_finder_params["max_roundness"]
+            assert isinstance(max_roundness, float), "Defensive programming."
+            threshold = 4.0  # reasonably high threshold to not detect noise...
+
+            # Iterate over a range of FWHM values and find the one with the most stars:
+            fwhm_values = np.linspace(2.0, 10.0, 17)
+            n_stars_values = []
+            for fwhm in fwhm_values:
+                # Instantiate the star finder:
+                stars = utils.find_stars(
+                    array=segment.array,
+                    threshold=threshold,
+                    fwhm=fwhm,
+                    max_roundness=max_roundness,
+                    mask=segment._mask,
+                )
+                n_stars_values.append(len(stars))
+            # Find the FWHM with the most stars:
+            optimal_fwhms.append(fwhm_values[np.argmax(n_stars_values)])
+
+        # Calculate the optimal FWHM as the average of the optimal FWHMs:
+        fwhm = np.mean(optimal_fwhms)
+        fwhm = round(float(fwhm), 2)
+
+        # Store the optimal FWHM in the stack and return:
+        self.star_finder_params["fwhm"] = fwhm
+        self.dump_state()
+        return fwhm
+
+    def detect_stars_in_ref_frame(self, n: int = 500) -> None:
         """
         A method to detect (close to) N stars in a single frame.
 
@@ -330,9 +415,6 @@ class FrameStack:
         Args:
             n: The target number of stars to detect in the whole frame. Optional, if
                 not passed, a sensible default is provided.
-            fwhm: The FWHM of the stars in [px]. This is an important parameter of the
-                low-level detection algorithm and might need to be tweaked for each
-                given project, depending on the lens, exposition, etc. Defaults to 4.0.
 
         Raises:
             ValueError: If the stars table exists already and contains stars from more
@@ -354,8 +436,23 @@ class FrameStack:
 
         frame = self.ref_frame
 
+        # If the FWHM is not set, find the optimal one (and set it):
+        fwhm = self.star_finder_params["fwhm"]
+        if fwhm is None:
+            fwhm = self._find_optimal_fwhm()
+
+        # Retrieve the maximal roundness from the star finder params:
+        max_roundness = self.star_finder_params["max_roundness"]
+        assert isinstance(max_roundness, float), "Defensive programming."
+
+        # Calculate the star density (in stars per 10,000 sky pixels) to lead to the
+        # target number of stars:
+        n_pixels = frame.width * frame.height
+        if frame.mask_name is not None:
+            n_pixels -= np.sum(frame.mask.mask_array)
+        density = n / (n_pixels / 10000)
+
         # Detect the stars in the frame:
-        n_per_segment = n // len(self.segment_boxes)
         threshold = 4.0  # initial threshold for the star finding algorithm
         segment_tables: list[pd.DataFrame] = []
         for box in PROGRESS_BAR(self.segment_boxes, f"Detecting stars in {frame.name}"):
@@ -363,7 +460,10 @@ class FrameStack:
             segment = frame.get_segment(box)
             # Find stars in the segment:
             segment_table = segment.find_stars(
-                n=n_per_segment, fwhm=fwhm, init_thresh=threshold
+                density=density,
+                fwhm=fwhm,
+                max_roundness=max_roundness,
+                init_thresh=threshold,
             )
             # Update the initial threshold for the next segment:
             threshold = round(float(segment_table["threshold"].iloc[0]), 9)
@@ -383,6 +483,12 @@ class FrameStack:
         cols = ["id", "frame", "x", "y", "flux", "threshold", "fwhm"]
         assert set(cols) == set(stars_table.columns), "Defensive programming."
         stars_table = stars_table[cols]
+
+        # round the columns to a reasonable precision:
+        for col in ["threshold", "fwhm"]:  # floating point error...
+            stars_table[col] = stars_table[col].astype(float).round(9)
+        for col in ["x", "y"]:
+            stars_table[col] = stars_table[col].astype(float).round(2)
 
         # Store the stars table in the stack:
         self.stars_table = stars_table
@@ -407,6 +513,8 @@ class FrameStack:
             "segment_boxes": [
                 [box.x1, box.y1, box.x2, box.y2] for box in self.segment_boxes
             ],
+            # star finder params are stored as a dictionary:
+            "star_finder_params": self.star_finder_params,
         }
 
         # Dump the state to a YAML file:
@@ -477,13 +585,12 @@ class FrameStack:
         """
         Make the stack plot and return it as a Plotly figure.
 
-        The stack plot will contain the bounding boxes of the sky segments (if the
-        sky has already been segmented) and the stars (if they have already been
-        detected).
-
         Optionally, the underlying frame can be selected by passing any frame object
         belonging to the same project.
         If not passed, a frame will be selected automatically from the stack.
+
+        If any stars have been detected for the selected frame, they will be plotted
+        as well.
 
         Args:
             frame: The frame to plot. If not passed, a frame will be selected
@@ -518,22 +625,6 @@ class FrameStack:
 
         # Plot the selected frame:
         fig = frame.plot()
-
-        # Add the segment boxes to the plot:
-        if self.segment_boxes:
-            x, y = [], []
-            for box in self.segment_boxes:
-                x.extend([box.x1, box.x2, box.x2, box.x1, box.x1, np.nan])
-                y.extend([box.y1, box.y1, box.y2, box.y2, box.y1, np.nan])
-            fig.add_trace(
-                go.Scatter(
-                    x=x,
-                    y=y,
-                    mode="lines",
-                    line=dict(color="blue", width=0.5),
-                    name="Segment boxes",
-                )
-            )
 
         # Add the stars to the plot, if any are detected for the selected frame:
         if self.stars_table is not None:

@@ -3,9 +3,6 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
-from astropy.stats import mad_std
-from photutils.detection import DAOStarFinder
-from scipy.spatial import distance_matrix
 
 import celestack._utils as utils
 
@@ -80,8 +77,9 @@ class Segment:
 
     def find_stars(
         self,
-        n: int,
+        density: float,
         fwhm: float,
+        max_roundness: float,
         init_thresh: float = 4.0,
     ) -> pd.DataFrame:
         """
@@ -89,26 +87,29 @@ class Segment:
 
         The stars are found using the DAOStarFinder algorithm from the photutils
         library, and the method intelligently adjusts the algorithm's threshold to find
-        the specified number of stars given by the `n` parameter.
+        the specified final stars density.
+        The threshold will be optimized to find double the number of stars requested
+        and the stars will then be capped to the `n` brightest ones.
 
-        The final threshold which lead to the number of stars needed for the target `n`
-        is recorded in the returned dataframe, as well as the fwhm.
-        These can be used as a `init_thresh` and `fwhm` parameters for the next call of
+        The final threshold which lead to the number of stars needed for the target N
+        is recorded in the returned dataframe.
+        It can be used as the `init_thresh` parameter for the next call of
         the `find_stars` in the neighboring segments (either spatially or in the stack).
 
-        All stars that are too close to other stars, or to an edge, are rejected.
-        This is factored in when finding the appropriate threshold. However, in some
-        rare cases, the final number of stars in the output table might be a little
-        less than the target `n`.
+        All stars that are too close to other stars or to to an edge, are rejected.
 
         The stars table is saved with the stars sorted by their flux (brightest first)
         and with unique IDs as index.
 
         Args:
-            n: The number of stars we want to find in the segment.
+            final_density: The final density of the found stars in the segment, in
+                stars per 10,000 sky pixels.
             fwhm: The full width at half maximum (FWHM) of the stars in [px].
                 This is one of the parameters of the star finding algorithm and might
                 have to be adjusted for each project.
+            max_roundness: The maximum roundness of the stars. This is fed to the
+                DAOStarFinder algorithm - all the stars with |roundness| > max_roundness
+                will be rejected by DAOStarFinder.
             init_thresh: The starting threshold for the star finding algorithm, in the
                 number of standard deviations of the typical bacground noise.
                 This is treated only as an initial guess, and the algorithm will adjust
@@ -121,12 +122,14 @@ class Segment:
                 - x: The x coordinate of the star in the original image (in pixels).
                 - y: The y coordinate of the star in the original image (in pixels).
                 - flux: The flux of the star.
-                - fwhm: The FWHM setting for the star finding algorithm (in pixels).
                 - threshold: The threshold used for finding the stars (in units of
                     standard deviations of the background noise).
         """
-        # Calculate the background noise using the median absolute deviation (MAD)
-        bkg_mad = mad_std(self.array)
+        # Calculate the number of stars to find:
+        n_pixels = self.array.size
+        if self._mask is not None:
+            n_pixels -= np.sum(self._mask)
+        n = int(round(n_pixels * density / 10000))
 
         # Find the sources:
         # Start with the `init_thresh * bkg_mad` threshold and iterate the threshold
@@ -139,8 +142,13 @@ class Segment:
         n_iters_stagnating = 0
         while True:
             # find the stars:
-            daofind = DAOStarFinder(fwhm=fwhm, threshold=thresh * bkg_mad)
-            new_sources = daofind(data=self.array, mask=self._mask)
+            new_sources = utils.find_stars(
+                array=self.array,
+                threshold=thresh,
+                fwhm=fwhm,
+                max_roundness=max_roundness,
+                mask=self._mask,
+            )
             # how far are we from the target number of sources?
             new_delta_n = len(new_sources) - target_n
             if delta_n is not None and abs(new_delta_n) > abs(delta_n):
@@ -161,36 +169,12 @@ class Segment:
             # adjust the threshold for the next iteration:
             thresh += thresh_incr if new_delta_n > 0 else -thresh_incr
 
-        # Convert the optimized sources table to a pandas DataFrame and sort by flux:
-        assert _sources is not None
-        sources: pd.DataFrame = _sources.to_pandas().sort_values(
-            by="flux", ascending=False
-        )
-        assert isinstance(sources, pd.DataFrame), "Just for the type checker"
+        # If after all this we have no sources, return an empty DataFrame:
+        if _sources is None or not len(_sources):
+            return pd.DataFrame(columns=["x", "y", "flux", "fwhm", "threshold"])
 
-        # Get rid of all the uninsteresing columns in the sources table:
-        sources.drop(columns=["id", "npix"], inplace=True)
-
-        # Reject all the sources which have another star too close:
-        star_margin = 1.5 * fwhm
-        dist_matrix = distance_matrix(
-            sources[["xcentroid", "ycentroid"]].values,
-            sources[["xcentroid", "ycentroid"]].values,
-        )
-        np.fill_diagonal(dist_matrix, np.inf)
-        too_close_iloc = np.where(dist_matrix.min(axis=0) < star_margin)[0]
-        too_close_ids = sources.index[too_close_iloc]
-        sources = sources[~sources.index.isin(too_close_ids)]
-
-        # Reject all the sources which are too close to the edges of the segment:
-        edge_margin = 1.5 * fwhm
-        edge_mask: pd.DataFrame = (
-            (sources["xcentroid"] < edge_margin)
-            | (sources["xcentroid"] > self.array.shape[1] - edge_margin)
-            | (sources["ycentroid"] < edge_margin)
-            | (sources["ycentroid"] > self.array.shape[0] - edge_margin)
-        )
-        sources = sources[~edge_mask]
+        # Sort by flux:
+        sources = _sources.sort_values(by="flux", ascending=False)
 
         # Cap the number of stars to `n`:
         if len(sources) > n:
@@ -204,9 +188,10 @@ class Segment:
         stars_table["fwhm"] = fwhm
         stars_table["threshold"] = thresh
 
-        return stars_table[["x", "y", "flux", "fwhm", "threshold"]].reset_index(
+        stars_table = stars_table[["x", "y", "flux", "fwhm", "threshold"]].reset_index(
             drop=True
         )
+        return stars_table
 
     def plot(self) -> go.Figure:
         """

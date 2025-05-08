@@ -3,7 +3,10 @@ from pathlib import Path
 
 import exifread
 import numpy as np
+import pandas as pd
 import tifffile
+from astropy.stats import mad_std
+from photutils.detection import DAOStarFinder
 from PIL import Image
 from plotly import graph_objects as go
 
@@ -184,3 +187,81 @@ def plot_image(array: np.ndarray) -> go.Figure:
     )
 
     return fig
+
+
+def find_stars(
+    array: np.ndarray,
+    threshold: float,
+    fwhm: float,
+    max_roundness: float = 1.0,
+    mask: np.ndarray | None = None,
+    show: bool = False,
+) -> pd.DataFrame:
+    """
+    A helper function to find stars in an image using the DAOStarFinder algorithm.
+
+    This function uses the `photutils` library to detect stars in an image. It
+    calculates the background noise using the median absolute deviation (MAD) and
+    uses the DAOStarFinder algorithm to find sources in the image. The function
+    returns a pandas DataFrame containing the detected stars.
+
+    The stars with |roundness| > `max_roundness` are filtered out.
+    Also, the stars close to the image border are filtered out, as are the stars within
+    1.5 * fwhm of other stars.
+
+    Args:
+        array: The image array in which to find stars.
+        threshold: The threshold for finding stars, in units of standard deviations of
+            the background noise.
+        fwhm: The full width at half maximum (FWHM) for the star finder.
+        max_roundness: The maximum roundness of the stars. Optional, defaults to 1.0.
+            More elongated stars will require a higher value not to be filtered out.
+            1.0 is the default used by the DAOStarFinder algorithm.
+        mask: A mask to exclude certain pixels from the analysis. Optional, defaults to
+            None (no mask).
+        show: If True, displays the plotly image with the detected stars.
+            Optional, defaults to False.
+
+    Returns:
+        A pandas DataFrame containing the detected stars, as returned by the
+        DAOStarFinder algorithm, indexed by their IDs.
+        If no stars are found, an empty DataFrame is returned.
+    """
+    bkg_mad = mad_std(array)
+
+    find = DAOStarFinder(
+        fwhm=fwhm,
+        threshold=threshold * bkg_mad,
+        roundlo=-max_roundness,
+        roundhi=max_roundness,
+        exclude_border=True,
+        min_separation=1.5 * fwhm,
+    )
+
+    sources = find(data=array, mask=mask)
+    if sources is None:
+        return pd.DataFrame()
+    sources = sources.to_pandas().set_index("id", drop=True)
+
+    if show:
+        fig = plot_image(array)
+        fig.add_scatter(
+            x=sources["xcentroid"],
+            y=sources["ycentroid"],
+            mode="markers",
+            marker=dict(
+                size=sources["flux"] / np.max(sources["flux"]) * 10,
+                color=sources["flux"],
+                colorscale="Viridis",
+            ),
+            name="Stars",
+        )
+        fig.update_layout(
+            title="Stars",
+            xaxis_title="X (pixels)",
+            yaxis_title="Y (pixels)",
+            showlegend=True,
+        )
+        fig.show()
+
+    return sources

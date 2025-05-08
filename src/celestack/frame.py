@@ -32,6 +32,11 @@ class Frame:
 
     The state peristence is done by dumping the instance state into a YAML file
     (`dicscovery.get_frame_state_path`).
+
+    TODO: Rebrand the image copies - path_fq, path_gs, path_cmp for full quality,
+        grayscale and compressed, respectively, the same with arrays.
+        Currently, compressed is the 8bit grayscale image, but in the future, we will
+        need downscaled copies for previews etc.
     """
 
     # The following attributes will not get dumped to the state file for any of the
