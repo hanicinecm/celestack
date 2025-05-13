@@ -80,6 +80,7 @@ class Segment:
         density: float,
         fwhm: float,
         max_roundness: float,
+        min_separation: float,
         init_thresh: float = 4.0,
     ) -> pd.DataFrame:
         """
@@ -110,6 +111,9 @@ class Segment:
             max_roundness: The maximum roundness of the stars. This is fed to the
                 DAOStarFinder algorithm - all the stars with |roundness| > max_roundness
                 will be rejected by DAOStarFinder.
+            min_separation: The minimum separation between stars, in the units of fwhm.
+                This is fed to the DAOStarFinder algorithm - all the stars with
+                separation < min_separation * fwhm will be rejected by DAOStarFinder.
             init_thresh: The starting threshold for the star finding algorithm, in the
                 number of standard deviations of the typical bacground noise.
                 This is treated only as an initial guess, and the algorithm will adjust
@@ -124,6 +128,7 @@ class Segment:
                 - flux: The flux of the star.
                 - threshold: The threshold used for finding the stars (in units of
                     standard deviations of the background noise).
+                - fwhm: The FWHM parameter used for the star finding algo (in pixels).
         """
         # Calculate the number of stars to find:
         n_pixels = self.array.size
@@ -140,6 +145,7 @@ class Segment:
         thresh_incr = 0.2
         target_n = 2 * n  # target number of stars (will be capped later)
         n_iters_stagnating = 0
+        # TODO: Optimize this with a binary search or something similar
         while True:
             # find the stars:
             new_sources = utils.find_stars(
@@ -147,6 +153,7 @@ class Segment:
                 threshold=thresh,
                 fwhm=fwhm,
                 max_roundness=max_roundness,
+                min_separation=min_separation,
                 mask=self._mask,
             )
             # how far are we from the target number of sources?
@@ -188,7 +195,7 @@ class Segment:
         stars_table["fwhm"] = fwhm
         stars_table["threshold"] = thresh
 
-        stars_table = stars_table[["x", "y", "flux", "fwhm", "threshold"]].reset_index(
+        stars_table = stars_table[["x", "y", "flux", "threshold", "fwhm"]].reset_index(
             drop=True
         )
         return stars_table

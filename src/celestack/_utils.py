@@ -194,7 +194,9 @@ def find_stars(
     threshold: float,
     fwhm: float,
     max_roundness: float = 1.0,
+    min_separation: float = 1.5,
     mask: np.ndarray | None = None,
+    exclude_border: bool = True,
     show: bool = False,
 ) -> pd.DataFrame:
     """
@@ -217,8 +219,12 @@ def find_stars(
         max_roundness: The maximum roundness of the stars. Optional, defaults to 1.0.
             More elongated stars will require a higher value not to be filtered out.
             1.0 is the default used by the DAOStarFinder algorithm.
+        min_separation: The minimum separation between stars, in the units of fwhm.
+            Optional, defaults to 1.5.
         mask: A mask to exclude certain pixels from the analysis. Optional, defaults to
             None (no mask).
+        exclude_border: If True, excludes stars that are too close to the image border.
+            Optional, defaults to True.
         show: If True, displays the plotly image with the detected stars.
             Optional, defaults to False.
 
@@ -234,8 +240,8 @@ def find_stars(
         threshold=threshold * bkg_mad,
         roundlo=-max_roundness,
         roundhi=max_roundness,
-        exclude_border=True,
-        min_separation=1.5 * fwhm,
+        exclude_border=exclude_border,
+        min_separation=min_separation * fwhm,
     )
 
     sources = find(data=array, mask=mask)

@@ -58,6 +58,7 @@ class FrameStack:
         self.star_finder_params: dict[str, float | None] = {
             "fwhm": None,  # optimum will be auto-detected.
             "max_roundness": 1.7,  # stars with higher |roundness| will be rejected.
+            "min_separation": 1.5,  # minimum separation between stars in [fwhm].
         }
 
         self.stars_table: pd.DataFrame | None = None
@@ -441,9 +442,13 @@ class FrameStack:
         if fwhm is None:
             fwhm = self._find_optimal_fwhm()
 
-        # Retrieve the maximal roundness from the star finder params:
+        # Retrieve the maximal roundness and minimal separation from the star finder
+        # params:
         max_roundness = self.star_finder_params["max_roundness"]
-        assert isinstance(max_roundness, float), "Defensive programming."
+        min_separation = self.star_finder_params["min_separation"]
+        assert isinstance(max_roundness, float) and min_separation is not None, (
+            "Defensive programming, mainly for the type checker."
+        )
 
         # Calculate the star density (in stars per 10,000 sky pixels) to lead to the
         # target number of stars:
@@ -463,6 +468,7 @@ class FrameStack:
                 density=density,
                 fwhm=fwhm,
                 max_roundness=max_roundness,
+                min_separation=min_separation,
                 init_thresh=threshold,
             )
             # Update the initial threshold for the next segment:
@@ -640,6 +646,15 @@ class FrameStack:
                         colorscale="Viridis",
                     ),
                     name="Stars",
+                    customdata=np.stack(
+                        [stars["id"], stars["x"], stars["y"], stars["flux"]], axis=-1
+                    ),
+                    hovertemplate=(
+                        "x: %{customdata[1]:.2f}<br>"
+                        "y: %{customdata[2]:.2f}<br>"
+                        "flux: %{customdata[3]}"
+                        "<extra>ID: %{customdata[0]}</extra>"
+                    ),
                 )
             )
 
