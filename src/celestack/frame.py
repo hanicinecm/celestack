@@ -118,6 +118,9 @@ class Frame:
         # Dump the state of the instance:
         self.dump_state()
 
+        # TODO: I might clean up the caching a bit at some point...
+        self._cache = {}  # A cache for the image arrays
+
     def __repr__(self) -> str:
         return f"{self.__class__.__name__}({self.name})"
 
@@ -143,7 +146,10 @@ class Frame:
     @property
     def compressed_array(self) -> np.ndarray:
         """Lazy read of the compressed image copy as an array."""
-        return utils.read_image(self.compressed_path)
+        # TODO: clean up the caching...
+        if "compressed_array" not in self._cache:
+            self._cache["compressed_array"] = utils.read_image(self.compressed_path)
+        return self._cache["compressed_array"]
 
     @property
     def width(self) -> int:
@@ -180,7 +186,7 @@ class Frame:
         state = {
             key: value
             for key, value in self.__dict__.items()
-            if key not in self.NON_STATE_ATTRS
+            if key not in self.NON_STATE_ATTRS and not key.startswith("_")
         }
         for key, func in self.NATIVE_TO_YAML.items():
             if key in state:
@@ -206,7 +212,7 @@ class Frame:
         state_path = discovery.get_frame_state_path(project, name)
         with open(state_path, "r") as state_file:
             state = yaml.safe_load(state_file)
-        state |= {"project": project, "name": name}
+        state |= {"project": project, "name": name, "_cache": {}}  # TODO: cache
         for key, func in cls.YAML_TO_NATIVE.items():
             if key in state:
                 state[key] = func(state[key])
@@ -230,7 +236,8 @@ class Frame:
         Returns:
             A Plotly figure containing the compressed image.
         """
-        return utils.plot_image(self.compressed_array)
+        fig = utils.plot_image(self.compressed_array)
+        return fig
 
 
 class DarkFrame(Frame):
@@ -323,6 +330,20 @@ class LightFrame(Frame):
             raise ValueError("Mask is not set.")
         return Mask.from_state(self.project, self.mask_name)
 
+    @property
+    def mask_array(self) -> np.ndarray | None:
+        """
+        Returns the mask array associated with the light frame.
+
+        If the mask is not set, None will be returned.
+        """
+        # TODO: clean up the caching...
+        if "mask_array" not in self._cache:
+            self._cache["mask_array"] = None
+            if self.mask_name is not None:
+                self._cache["mask_array"] = self.mask.mask_array
+        return self._cache["mask_array"]
+
     def get_segment(self, box: SegmentBox) -> Segment:
         """
         Returns a Segment object representing the rectangular segment of the sky
@@ -382,15 +403,16 @@ class LightFrame(Frame):
                     standard deviations of the background noise).
                 - fwhm: The FWHM parameter used for the star finding algo (in pixels).
         """
+        # Round the coordinates to the nearest pixel:
+        x, y = int(round(x)), int(round(y))
+
         # Check if the coordinates are inside the image:
         if x < 0 or x >= self.width or y < 0 or y >= self.height:
             return None
 
         # Check if the coordinates are in the foreground:
-        if (
-            self.mask_name is not None
-            and self.mask.mask_array[int(round(y)), int(round(x))]
-        ):
+        mask_array = self.mask_array
+        if mask_array is not None and mask_array[y, x]:
             return None
 
         # Slice the image array around the given coordinates:
@@ -414,11 +436,20 @@ class LightFrame(Frame):
             exclude_border=False,
         )
 
-        # If no stars are found, or more than one is, return None:
-        if sources is None or len(sources) != 1:
+        if sources is None or not len(sources):
+            # If no stars are found, return None:
             return None
 
-        star = sources.iloc[0]
+        if len(sources) == 1:
+            # If exactly one star is found, return its data:
+            star = sources.iloc[0]
+        else:
+            # If more than one star found, return the one closer to the center:
+            dist = np.sqrt(
+                (sources["xcentroid"] - slice_array.shape[1] / 2) ** 2
+                + (sources["ycentroid"] - slice_array.shape[0] / 2) ** 2
+            )
+            star = sources.iloc[np.argmin(dist)]
 
         return {
             "x": round(star["xcentroid"] + x1, 2),

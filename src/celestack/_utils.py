@@ -1,3 +1,6 @@
+import base64
+import io
+import warnings
 from os import PathLike
 from pathlib import Path
 
@@ -7,6 +10,7 @@ import pandas as pd
 import tifffile
 from astropy.stats import mad_std
 from photutils.detection import DAOStarFinder
+from photutils.detection.daofinder import NoDetectionsWarning
 from PIL import Image
 from plotly import graph_objects as go
 
@@ -158,32 +162,79 @@ def compress_image(img_array: np.ndarray, downscale_factor: int = 1) -> np.ndarr
     return img_array
 
 
-def plot_image(array: np.ndarray) -> go.Figure:
+def plot_image(
+    array: np.ndarray,
+    width: int = 1200,
+    height: int = 900,
+    interactive: bool = False,
+) -> go.Figure:
     """
     Displays an image using matplotlib.
 
     Args:
         array: The image array to display.
+        width: The width of the figure in pixels. Optional, defaults to 1200.
+        height: The height of the figure in pixels. Optional, defaults to 900.
+        interactive: If True, the image will be displayed in an interactive Plotly
+            figure, where each pixel can be hovered over to see its coordinates and
+            value. Optional, defaults to False.
 
     Returns:
         A Plotly figure object containing the image.
     """
-    if array.ndim == 2:
+    if not array.ndim == 2:
+        raise NotImplementedError(
+            "Only 2D arrays (grayscale images) are supported for plotting."
+        )
+
+    # Get the image dimensions
+    img_height, img_width = array.shape
+
+    # Initialize the figure:
+    if interactive:
         fig = go.Figure(data=go.Heatmap(z=array, colorscale="gray", showscale=False))
     else:
-        raise NotImplementedError
+        fig = go.Figure()
 
+        # Convert grayscale array to PIL image and then to base64 PNG
+        img_pil = Image.fromarray(array.astype(np.uint8))
+        buffer = io.BytesIO()
+        img_pil.save(buffer, format="PNG")
+        img_base64 = base64.b64encode(buffer.getvalue()).decode("utf-8")
+
+        # Add the image to the figure as a background
+        fig.update_layout(
+            images=[
+                dict(
+                    source="data:image/png;base64," + img_base64,
+                    xref="x",
+                    yref="y",
+                    x=0,
+                    y=0,
+                    sizex=img_width,
+                    sizey=img_height,
+                    sizing="stretch",
+                    opacity=1.0,
+                    layer="below",
+                )
+            ],
+        )
+
+    # Create a Plotly figure with the image in the background
     fig.update_layout(
+        xaxis=dict(range=[0, img_width], visible=False, showgrid=False, zeroline=False),
         yaxis=dict(
-            autorange="reversed",
+            range=[img_height, 0],
+            visible=False,
             showgrid=False,
             zeroline=False,
-            visible=False,
             scaleanchor="x",
         ),
-        xaxis=dict(showgrid=False, zeroline=False, visible=False),
+        width=width,
+        height=height,
         paper_bgcolor="rgba(255,255,255,0)",
         plot_bgcolor="rgba(255,255,255,0)",
+        margin=dict(l=0, r=0, t=30, b=0),
     )
 
     return fig
@@ -244,7 +295,10 @@ def find_stars(
         min_separation=min_separation * fwhm,
     )
 
-    sources = find(data=array, mask=mask)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", NoDetectionsWarning)
+        sources = find(data=array, mask=mask)
+
     if sources is None:
         return pd.DataFrame()
     sources = sources.to_pandas().set_index("id", drop=True)

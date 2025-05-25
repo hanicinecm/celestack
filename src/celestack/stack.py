@@ -9,6 +9,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import plotly.colors as pc
 import plotly.graph_objects as go
 import yaml
 
@@ -485,8 +486,11 @@ class FrameStack:
         # Assign unique IDs to the stars:
         stars_table["id"] = np.arange(len(stars_table))
 
+        # Add the "t" column, which is a "time-like" distance from the reference frame:
+        stars_table["t"] = 0  # this is the reference frame...
+
         # Sort the columns in the stars table:
-        cols = ["id", "frame", "x", "y", "flux", "threshold", "fwhm"]
+        cols = ["id", "frame", "t", "x", "y", "flux", "threshold", "fwhm"]
         assert set(cols) == set(stars_table.columns), "Defensive programming."
         stars_table = stars_table[cols]
 
@@ -632,32 +636,91 @@ class FrameStack:
         # Plot the selected frame:
         fig = frame.plot()
 
-        # Add the stars to the plot, if any are detected for the selected frame:
         if self.stars_table is not None:
-            stars = self.stars_table[self.stars_table["frame"] == frame.name]
+            colorscale = "Viridis"
+
+            # Add the stars to the plot, if any are detected for the selected frame:
+            stars_in_frame = self.stars_table[self.stars_table["frame"] == frame.name]
             fig.add_trace(
                 go.Scatter(
-                    x=stars["x"],
-                    y=stars["y"],
+                    x=stars_in_frame["x"],
+                    y=stars_in_frame["y"],
                     mode="markers",
                     marker=dict(
-                        size=stars["flux"] / np.max(stars["flux"]) * 10,
-                        color=stars["flux"],
-                        colorscale="Viridis",
+                        size=(
+                            stars_in_frame["flux"] / np.max(stars_in_frame["flux"]) * 10
+                        ),
+                        color=stars_in_frame["flux"],
+                        colorscale=colorscale,
                     ),
                     name="Stars",
-                    customdata=np.stack(
-                        [stars["id"], stars["x"], stars["y"], stars["flux"]], axis=-1
-                    ),
+                    customdata=stars_in_frame[["id", "x", "y", "frame", "flux"]].values,
                     hovertemplate=(
+                        "ID: %{customdata[0]}<br>"
                         "x: %{customdata[1]:.2f}<br>"
                         "y: %{customdata[2]:.2f}<br>"
-                        "flux: %{customdata[3]}"
-                        "<extra>ID: %{customdata[0]}</extra>"
+                        "frame: %{customdata[3]}<br>"
+                        "flux: %{customdata[4]}<br>"
+                        "<extra></extra>"
                     ),
                 )
             )
 
             fig.update_layout(showlegend=True)
+
+            # If the stars have been already propagated to any other frames, add the
+            # trails as separate traces:
+            stars_colors = stars_in_frame.set_index("id")["flux"]
+            vmin, vmax = stars_colors.min(), stars_colors.max()
+            stars_colors_norm = (stars_colors - vmin) / (vmax - vmin)
+            rgb_dict = dict(
+                zip(
+                    stars_colors.index,
+                    pc.sample_colorscale(
+                        colorscale, stars_colors_norm, colortype="rgb"
+                    ),
+                )
+            )
+
+            # Add a dummy trace to control the stars trails traces in one legend group:
+            legend_group_name = "star_trails"
+            fig.add_trace(
+                go.Scatter(
+                    x=[None],
+                    y=[None],
+                    mode="lines",
+                    line=dict(width=1, color="rgb(100, 100, 100)"),
+                    name="Star Trails",  # Shown in the legend
+                    legendgroup=legend_group_name,
+                    showlegend=True,
+                )
+            )
+
+            if len(self.stars_table.frame.unique()) > 1:
+                star_trails = self.stars_table.sort_values(by=["t"])
+                for star_id in sorted(star_trails["id"].unique()):
+                    star_trail = star_trails[star_trails["id"] == star_id]
+                    color = rgb_dict.get(star_id, "rgb(100, 100, 100)")
+                    fig.add_trace(
+                        go.Scatter(
+                            x=star_trail["x"],
+                            y=star_trail["y"],
+                            mode="lines",
+                            line=dict(
+                                width=1,
+                                color=color,
+                            ),
+                            customdata=star_trail[["id", "x", "y", "frame"]].values,
+                            hovertemplate=(
+                                "ID: %{customdata[0]}<br>"
+                                "x: %{customdata[1]:.2f}<br>"
+                                "y: %{customdata[2]:.2f}<br>"
+                                "frame: %{customdata[3]}<br>"
+                                "<extra></extra>"
+                            ),
+                            showlegend=False,
+                            legendgroup=legend_group_name,
+                        )
+                    )
 
         return fig
