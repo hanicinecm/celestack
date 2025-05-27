@@ -87,6 +87,8 @@ class Segment:
         The stars table is saved with the stars sorted by their flux (brightest first)
         and with unique IDs as index.
 
+        TODO: Return a polars DataFrame instead of pandas DataFrame.
+
         Args:
             density: The final density of the found stars in the segment, in
                 stars per 10,000 sky pixels.
@@ -190,4 +192,4 @@ class Segment:
         Returns:
             A Plotly figure object containing the image.
         """
-        return utils.plot_image(self.array)
+        return utils.plot_image(self.array, interactive=True)

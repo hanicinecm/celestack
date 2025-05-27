@@ -31,6 +31,9 @@ class FrameStack:
         The stars (once detected) are stored in the `stars_table` attribute as a
         DataFrame.
 
+        This initializer only applies if the stack does not yet exist in the project.
+        For an already existing stack, use the `from_state` class method instead.
+
         Args:
             project: The name of the project.
         """
@@ -59,7 +62,7 @@ class FrameStack:
             "min_separation": 1.5,  # minimum separation between stars in [fwhm].
         }
 
-        self.stars_table: pd.DataFrame | None = None
+        self.stars_table: pd.DataFrame | None = None  # TODO: switch to polars
 
         # Dump the initial state of the stack to the state file:
         self.dump_state()
@@ -146,7 +149,6 @@ class FrameStack:
         # Subtract the master-dark frame from all the light frames:
         for lf in PROGRESS_BAR(self.light_frames.values(), "Subtracting master dark"):
             lf.subtract_master_dark(self.master_dark)
-
         self.dump_state()
 
     def create_average_light_frame(self) -> None:
@@ -201,13 +203,13 @@ class FrameStack:
                 msg,
             )
 
-        # Add the mask to the stack and save it into the project:
-        self.mask = mask
-        self.dump_state()
-
         # Assign the mask to all the light frames in the stack:
         for lf in self.light_frames.values():
             lf.assign_mask(mask)
+
+        # Add the mask to the stack and save it into the project:
+        self.mask = mask
+        self.dump_state()
 
     def segment_sky(self, n_segments: int = 50) -> None:
         """Segment the sky into N rectangular segments.
@@ -416,7 +418,7 @@ class FrameStack:
         self.dump_state()
         return fwhm
 
-    def detect_stars_in_ref_frame(self, n: int = 500) -> None:
+    def detect_stars_in_ref_frame(self, n: int = 1000) -> None:
         """Detect roughly N stars in a single frame.
 
         The algorithm will go from segment to segment (the sky must have been segmented
@@ -478,8 +480,8 @@ class FrameStack:
         # Calculate the star density (in stars per 10,000 sky pixels) to lead to the
         # target number of stars:
         n_pixels = frame.width * frame.height
-        if frame.mask_name is not None:
-            n_pixels -= np.sum(frame.mask.mask_array)
+        if frame.mask_array is not None:
+            n_pixels -= np.sum(frame.mask_array)
         density = n / (n_pixels / 10000)
 
         # Detect the stars in the frame:
@@ -624,6 +626,9 @@ class FrameStack:
 
         If any stars have been detected for the selected frame, they will be plotted
         as well.
+        Additionally, if any stars have been propagated to other frames, their
+        trails will be plotted with the same colors as the stars in the selected
+        frame.
 
         Args:
             frame: The frame to plot. If not passed, a frame will be selected

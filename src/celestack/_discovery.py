@@ -37,7 +37,8 @@ def get_project_frames_dir(project_name: str) -> Path:
     """Return the frames directory for the specific Celestack project.
 
     In the frames directory, the frame states are stored in configuration files, as well
-    as the compressed images and any newly created full-res images.
+    as the all the image copies (such as full-resolution image copies, the generated
+    grayscale 8Bit images, the thumbnails, etc.)
 
     If the frames directory does not exist, it will be created.
 

@@ -118,41 +118,20 @@ def get_bit_depth(img_array: np.ndarray) -> int:
     return depth
 
 
-def compress_image(img_array: np.ndarray, downscale_factor: int = 1) -> np.ndarray:
-    """Create a compressed image array from the original image array.
-
-    The compressed image is an 8-bit grayscale, optionally downscaled by a specified
-    factor. The downscaling is done by averaging the pixel values in blocks of size
-    `downscale_factor` x `downscale_factor` into a single pixel value.
+def compress_to_grayscale(img_array: np.ndarray) -> np.ndarray:
+    """Create a grayscale 8bit image array from the original image array.
 
     Args:
         img_array: The original image array. Normally this is a 16-bit 3-channel RGB.
-        downscale_factor: The factor by which to downscale the image. Optional,
-            defaults to 1 (no downscaling).
 
     Returns:
-        A NumPy array representing the compressed image.
-
-    TODO: Refactor this - should be called `create_grayscale_image` or similar...
+        A NumPy array representing the grayscale 8bit image.
     """
     depth = get_bit_depth(img_array)
 
     # Convert grayscale using the standard luminance formula:
     if len(img_array.shape) == 3:
         img_array = np.dot(img_array[..., :3], [0.299, 0.587, 0.114])
-
-    # Downscale the array - each NxN pixels will be averaged to one:
-    if downscale_factor > 1:
-        img_array = img_array[
-            : img_array.shape[0] // downscale_factor * downscale_factor,
-            : img_array.shape[1] // downscale_factor * downscale_factor,
-        ]
-        img_array = img_array.reshape(
-            img_array.shape[0] // downscale_factor,
-            downscale_factor,
-            img_array.shape[1] // downscale_factor,
-            downscale_factor,
-        ).mean(axis=(1, 3))
 
     # Convert to 8-bit:
     img_array = img_array / (2**depth - 1) * 255
