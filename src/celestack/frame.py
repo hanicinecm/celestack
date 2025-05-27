@@ -1,6 +1,8 @@
+"""A module defining the Frame class and its subclasses."""
+
 from os import PathLike
 from pathlib import Path
-from typing import Literal
+from typing import ClassVar, Literal, Self
 
 import numpy as np
 import yaml
@@ -14,8 +16,8 @@ from celestack.segment import Segment, SegmentBox
 
 
 class Frame:
-    """
-    A base class representing a frame in a celestack project.
+    """A base class representing a frame in a celestack project.
+
     This base class is designed to be used as a base class for multitude of concrete
     frame types, such as DarkFrame, LightFrame, AverageFrame, etc.
 
@@ -42,12 +44,12 @@ class Frame:
     # The following attributes will not get dumped to the state file for any of the
     # subclasses of the Frame class, and they need to be assigned explicitly in the
     # `from_state` method.
-    NON_STATE_ATTRS = {"project", "name"}
+    NON_STATE_ATTRS: ClassVar = {"project", "name"}
 
     # The following are the wrappings that need to be done on attributes when dumping
     # to the YAML state file and loading from it:
-    NATIVE_TO_YAML = {"shape": list}
-    YAML_TO_NATIVE = {"shape": tuple}
+    NATIVE_TO_YAML: ClassVar = {"shape": list}
+    YAML_TO_NATIVE: ClassVar = {"shape": tuple}
 
     def __init__(
         self,
@@ -55,9 +57,8 @@ class Frame:
         name: str,
         img_path: str | PathLike | None = None,
         img_array: np.ndarray | None = None,
-    ):
-        """
-        Initializes the Frame.
+    ) -> None:
+        """Initialize the Frame.
 
         There are two modes of instantiating the Frame class - by passing either path
         to the original full-resolution image, or by passing the full-resolution,
@@ -89,17 +90,20 @@ class Frame:
         """
         # Arguments validation:
         if img_path is not None and img_array is not None:
-            raise ValueError("Only one of img_path or img_array must be provided.")
+            msg = "Only one of img_path or img_array must be provided."
+            raise ValueError(msg)
 
         # Validate that the frame has not yet been initialized:
         if discovery.get_frame_state_path(project, name).exists():
+            msg = f"Frame '{name}' already exists in project '{project}'."
             raise FileExistsError(
-                f"Frame '{name}' already exists in project '{project}'."
+                msg,
             )
 
         # Read the full-quality image into array, if passed via path:
         if img_array is None:
-            assert img_path is not None  # make type checker happy
+            if img_path is None:
+                raise ValueError  # just to make the type checker happy
             img_array = utils.read_image(img_path)
 
         # The basic attributes:
@@ -122,30 +126,31 @@ class Frame:
         self._cache = {}  # A cache for the image arrays
 
     def __repr__(self) -> str:
+        """Return a string representation of the Frame instance."""
         return f"{self.__class__.__name__}({self.name})"
 
     @property
     def image_path(self) -> Path:
-        """Returns the path to the full-quality image copy."""
+        """Path to the full-quality image copy."""
         full_quality_dir = discovery.get_project_frames_dir(self.project) / "full"
         full_quality_dir.mkdir(parents=True, exist_ok=True)
         return full_quality_dir / f"{self.name}.tiff"
 
     @property
     def image_array(self) -> np.ndarray:
-        """Returns the full-quality image copy as an array."""
+        """The full-quality image copy as an array."""
         return utils.read_image(self.image_path)
 
     @property
     def compressed_path(self) -> Path:
-        """Returns the path to the compressed image copy."""
+        """Path to the compressed image copy."""
         compressed_dir = discovery.get_project_frames_dir(self.project) / "compressed"
         compressed_dir.mkdir(parents=True, exist_ok=True)
         return compressed_dir / f"{self.name}.tiff"
 
     @property
     def compressed_array(self) -> np.ndarray:
-        """Lazy read of the compressed image copy as an array."""
+        """The compressed image copy as an array."""
         # TODO: clean up the caching...
         if "compressed_array" not in self._cache:
             self._cache["compressed_array"] = utils.read_image(self.compressed_path)
@@ -153,18 +158,16 @@ class Frame:
 
     @property
     def width(self) -> int:
-        """Returns the width of the original image."""
+        """The width of the original image."""
         return self.shape[1]
 
     @property
     def height(self) -> int:
-        """Returns the height of the original image."""
+        """The height of the original image."""
         return self.shape[0]
 
     def update_image(self, img_array: np.ndarray) -> None:
-        """
-        Updates the copies of the full-quality image and the compressed image in the
-        project folder.
+        """Update all the image copies in the project folder.
 
         The method will overwrite the existing images in the project folder, but it will
         never touch the original image.
@@ -177,8 +180,7 @@ class Frame:
         utils.save_tiff(compressed_array, self.compressed_path, overwrite=True)
 
     def dump_state(self) -> None:
-        """
-        A function to dump the state of the frame into the frame's YAML file.
+        """Dump the state of the frame into the frame's YAML file.
 
         This is the method responsible for persisting the state of the frame instance.
         """
@@ -192,13 +194,12 @@ class Frame:
             if key in state:
                 state[key] = func(state[key])
         state_path = discovery.get_frame_state_path(self.project, self.name)
-        with open(state_path, "w") as state_file:
+        with state_path.open("w") as state_file:
             yaml.dump(state, state_file, default_flow_style=False)
 
     @classmethod
-    def from_state(cls, project: str, name: str):
-        """
-        Initializes the Frame from its state file.
+    def from_state(cls, project: str, name: str) -> Self:
+        """Initialize the Frame from its state file.
 
         Args:
             project: The name of the project to which this frame belongs.
@@ -210,7 +211,7 @@ class Frame:
         """
         # Load the state from the YAML file:
         state_path = discovery.get_frame_state_path(project, name)
-        with open(state_path, "r") as state_file:
+        with state_path.open() as state_file:
             state = yaml.safe_load(state_file)
         state |= {"project": project, "name": name, "_cache": {}}  # TODO: cache
         for key, func in cls.YAML_TO_NATIVE.items():
@@ -223,26 +224,23 @@ class Frame:
 
         return instance
 
-    def clear(self):
-        """A method to remove all the traces of the frame from the project folder."""
+    def clear(self) -> None:
+        """Remove all the traces of the frame from the project folder."""
         self.image_path.unlink(missing_ok=True)
         self.compressed_path.unlink(missing_ok=True)
         discovery.get_frame_state_path(self.project, self.name).unlink(missing_ok=True)
 
     def plot(self) -> go.Figure:
-        """
-        A method to plot the compressed image into a standardly styled Plotly figure.
+        """Plot the compressed image into a standardly styled Plotly figure.
 
         Returns:
             A Plotly figure containing the compressed image.
         """
-        fig = utils.plot_image(self.compressed_array)
-        return fig
+        return utils.plot_image(self.compressed_array)
 
 
 class DarkFrame(Frame):
-    """
-    A class representing a dark frame in a celestack project.
+    """A class representing a dark frame in a celestack project.
 
     A DarkFrame is a special kind of Frame, which wraps around the dark frame image -
     an image taken with the same camera settings as the light frames, but with the lens
@@ -256,13 +254,20 @@ class DarkFrame(Frame):
     attributes and methods of the Frame class.
     """
 
-    def __init__(self, project: str, name: str, img_path: str | PathLike):
+    def __init__(self, project: str, name: str, img_path: str | PathLike) -> None:
+        """Initialize the DarkFrame.
+
+        Args:
+            project: The name of the project to which this frame belongs.
+            name: The name of the frame. This is assigned by the project and usually
+                corresponds to the name of the original image.
+            img_path: The path to the original dark frame image file.
+        """
         super().__init__(project=project, name=name, img_path=img_path)
 
 
 class LightFrame(Frame):
-    """
-    A class representing a light frame in a celestack project.
+    """A class representing a light frame in a celestack project.
 
     A LightFrame is a special kind of Frame, which wraps around the light frame image -
     an image containing the actual sky and optionally the foreground.
@@ -271,7 +276,15 @@ class LightFrame(Frame):
     attributes and methods of the Frame class.
     """
 
-    def __init__(self, project: str, name: str, img_path: str | PathLike):
+    def __init__(self, project: str, name: str, img_path: str | PathLike) -> None:
+        """Initialize the LightFrame.
+
+        Args:
+            project: The name of the project to which this frame belongs.
+            name: The name of the frame. This is assigned by the project and usually
+                corresponds to the name of the original image.
+            img_path: The path to the original light frame image file.
+        """
         # Initialize some attributes specific to the LightFrame:
         self.master_dark_name: str | None = None
         self.mask_name: str | None = None
@@ -279,8 +292,7 @@ class LightFrame(Frame):
         super().__init__(project=project, name=name, img_path=img_path)
 
     def subtract_master_dark(self, master_dark: "MasterDark") -> None:
-        """
-        Subtracts the master dark frame from the light frame.
+        """Subtract the master dark frame from the light frame.
 
         The method will rewrite both the compressed image and the full-quality image
         in the project folder (the original images remain untouched).
@@ -292,7 +304,8 @@ class LightFrame(Frame):
         """
         # Check if the master dark is already set:
         if self.master_dark_name is not None:
-            raise ValueError("Master dark is already set.")
+            msg = "Master dark is already set."
+            raise ValueError(msg)
 
         # Set the master dark:
         self.master_dark_name = master_dark.name
@@ -307,8 +320,7 @@ class LightFrame(Frame):
         self.dump_state()
 
     def assign_mask(self, mask: "Mask") -> None:
-        """
-        Adds a foreground mask to the light frame.
+        """Add a foreground mask to the light frame.
 
         The method will update the state of the frame in the YAML file with the mask
         frame name.
@@ -321,19 +333,18 @@ class LightFrame(Frame):
 
     @property
     def mask(self) -> "Mask":
-        """
-        Returns the mask frame associated with the light frame.
+        """The mask frame associated with the light frame.
 
         If the mask is not set, it will raise an exception.
         """
         if self.mask_name is None:
-            raise ValueError("Mask is not set.")
+            msg = "Mask is not set."
+            raise ValueError(msg)
         return Mask.from_state(self.project, self.mask_name)
 
     @property
     def mask_array(self) -> np.ndarray | None:
-        """
-        Returns the mask array associated with the light frame.
+        """The mask array associated with the light frame.
 
         If the mask is not set, None will be returned.
         """
@@ -345,9 +356,7 @@ class LightFrame(Frame):
         return self._cache["mask_array"]
 
     def get_segment(self, box: SegmentBox) -> Segment:
-        """
-        Returns a Segment object representing the rectangular segment of the sky
-        portion of the light frame.
+        """Return a Segment object representing the rectangular chunk of the sky.
 
         Args:
             box: The SegmentBox object defining the segment bounding box.
@@ -363,16 +372,13 @@ class LightFrame(Frame):
 
     def find_star(
         self,
-        x: float,
-        y: float,
+        pos: tuple[float, float],
         fwhm: float,
         threshold: float,
         max_roundness: float,
         min_separation: float,
     ) -> dict[str, float] | None:
-        """
-        Finds a single star in the light frame in the proximity of the given pixel
-        coordinates.
+        """Find a single star in the light frame in the proximity of given point.
 
         If the expected pixel coordinates are outside the image or in the foreground,
         the method will return None.
@@ -384,8 +390,8 @@ class LightFrame(Frame):
         None.
 
         Args:
-            x: The X coordinate around which we are looking for the star.
-            y: The Y coordinate around which we are looking for the star.
+            pos: The (x, y) coordinates of the expected star position in the original
+                image, in pixels.
             fwhm: The full width at half maximum (FWHM) for the star finder.
             threshold: The threshold for finding stars, in units of standard deviations
                 of the background noise.
@@ -404,7 +410,7 @@ class LightFrame(Frame):
                 - fwhm: The FWHM parameter used for the star finding algo (in pixels).
         """
         # Round the coordinates to the nearest pixel:
-        x, y = int(round(x)), int(round(y))
+        x, y = (round(u) for u in pos)
 
         # Check if the coordinates are inside the image:
         if x < 0 or x >= self.width or y < 0 or y >= self.height:
@@ -416,10 +422,10 @@ class LightFrame(Frame):
             return None
 
         # Slice the image array around the given coordinates:
-        x1 = max(0, int(round(x - min_separation * fwhm)))
-        x2 = min(self.width, int(round(x + min_separation * fwhm)))
-        y1 = max(0, int(round(y - min_separation * fwhm)))
-        y2 = min(self.height, int(round(y + min_separation * fwhm)))
+        x1 = max(0, round(x - min_separation * fwhm))
+        x2 = min(self.width, round(x + min_separation * fwhm))
+        y1 = max(0, round(y - min_separation * fwhm))
+        y2 = min(self.height, round(y + min_separation * fwhm))
         slice_array = self.compressed_array[y1:y2, x1:x2]
 
         # If the slice is empty, return None:
@@ -447,7 +453,7 @@ class LightFrame(Frame):
             # If more than one star found, return the one closer to the center:
             dist = np.sqrt(
                 (sources["xcentroid"] - slice_array.shape[1] / 2) ** 2
-                + (sources["ycentroid"] - slice_array.shape[0] / 2) ** 2
+                + (sources["ycentroid"] - slice_array.shape[0] / 2) ** 2,
             )
             star = sources.iloc[np.argmin(dist)]
 
@@ -461,8 +467,7 @@ class LightFrame(Frame):
 
 
 class Mask(Frame):
-    """
-    A class representing a mask frame in a celestack project.
+    """A class representing a mask frame in a celestack project.
 
     A Mask is a special kind of Frame, which expects the passed image to be a binary
     mask, where white pixels are the foreground, while the black pixels are the sky.
@@ -474,13 +479,28 @@ class Mask(Frame):
         name: str,
         img_path: str | PathLike | None = None,
         img_array: np.ndarray | None = None,
-    ):
+    ) -> None:
+        """Initialize the Mask frame.
+
+        Args:
+            project: The name of the project to which this frame belongs.
+            name: The name of the frame. This is assigned by the project and usually
+                corresponds to the name of the original image.
+            img_path: The path to the original mask image file. Optional, only required
+                if the `img_array` is not passed.
+            img_array: The binary mask image array. Optional, only required if the
+                `img_path` is not passed. The mask should be a 2D array of booleans,
+                where True values represent the foreground (to be masked out) and False
+                values represent the sky.
+        """
         if img_array is not None:
             # Validate that the mask is a 2D binary mask:
             if img_array.ndim != 2:
-                raise ValueError("The mask array must be a 2D array.")
+                msg = "The mask array must be a 2D array."
+                raise ValueError(msg)
             if not np.array_equal(img_array, img_array.astype(bool)):
-                raise ValueError("The mask array must be a boolean array.")
+                msg = "The mask array must be a boolean array."
+                raise ValueError(msg)
             # Make it into a 8bit grayscale image, to conform with the Frame class:
             img_array = img_array.astype(np.uint8) * 255
 
@@ -493,8 +513,7 @@ class Mask(Frame):
 
     @property
     def mask_array(self) -> np.ndarray:
-        """
-        Returns the binary mask as a NumPy array with boolean datatype.
+        """Returns the binary mask as a NumPy array with boolean datatype.
 
         The mask is a 2D array, where True values represent the foreground (to be masked
         out) and False values represent the sky.
@@ -503,8 +522,7 @@ class Mask(Frame):
 
 
 class AverageFrame(Frame):
-    """
-    A class used to average multiple frames together into a new frame.
+    """A class used to average multiple frames together into a new frame.
 
     This is just a plain averaging, without taking into account any alignment or
     transformations.
@@ -518,11 +536,25 @@ class AverageFrame(Frame):
         name: str,
         frames: list[DarkFrame] | list[LightFrame],
         avg_func: Literal["mean", "median"] = "median",
-    ):
+    ) -> None:
+        """Initialize the AverageFrame.
+
+        The constructor will create a new frame by averaging the passed frames together
+        and saving the result to the project folder.
+
+        Args:
+            project: The name of the project to which this frame belongs.
+            name: The name of the frame. This is assigned by the project and usually
+                corresponds to the name of the original image.
+            frames: A list of DarkFrames or LightFrames to average together.
+            avg_func: The function to use for averaging. Can be either "mean" or
+                "median". Defaults to "median".
+        """
         # Validate that the frame has not yet been initialized:
         if discovery.get_frame_state_path(project, name).exists():
+            msg = f"Frame '{name}' already exists in project '{project}'."
             raise FileExistsError(
-                f"Frame '{name}' already exists in project '{project}'."
+                msg,
             )
 
         # Store some attributes specific to the AverageFrame:
@@ -536,10 +568,10 @@ class AverageFrame(Frame):
 
     @staticmethod
     def _average_frames(
-        frames: list[DarkFrame] | list[LightFrame], avg_func: Literal["mean", "median"]
+        frames: list[DarkFrame] | list[LightFrame],
+        avg_func: Literal["mean", "median"],
     ) -> np.ndarray:
-        """
-        A static method to average multiple frames together into a new frame.
+        """Average multiple frames together into a new frame.
 
         I need to average together potentially large number of potentially very large
         images, so this cannot be done by loading all of them into memory at once.
@@ -552,10 +584,14 @@ class AverageFrame(Frame):
         Returns:
             A NumPy array representing the averaged image, with the same shape and
             data type as any of the original images.
+
+        TODO: All the arrays (appart from the full quality ones) are cached anyway!
+        TODO: Refactor to utils.
         """
         # Basic arguments validation:
         if not frames:
-            raise ValueError("The list of frames cannot be empty.")
+            msg = "The list of frames cannot be empty."
+            raise ValueError(msg)
 
         shape = frames[0].shape
         bit_depth = frames[0].bit_depth
@@ -565,7 +601,8 @@ class AverageFrame(Frame):
         elif isinstance(frames[0], DarkFrame):
             frame_type = "dark frame"
         else:
-            raise ValueError("The frames must be either LightFrame or DarkFrame.")
+            msg = "The frames must be either LightFrame or DarkFrame."
+            raise TypeError(msg)
 
         if avg_func == "mean":
             # Mean is easy - just keep the rolling sum and normalize at the end:
@@ -574,11 +611,9 @@ class AverageFrame(Frame):
             for frame in PROGRESS_BAR(frames, f"Averaging {frame_type}s"):
                 sum_array += frame.image_array / (2**frame.bit_depth - 1)
 
-            avg_array = (sum_array / len(frames) * (2**bit_depth - 1)).astype(dtype)
+            return (sum_array / len(frames) * (2**bit_depth - 1)).astype(dtype)
 
-            return avg_array
-
-        elif avg_func == "median":
+        if avg_func == "median":
             # Median is non-linear and cannot be build sequentially... we'll build it
             # chunk by chunk:
             avg_array = np.zeros(shape=shape, dtype=dtype)
@@ -602,19 +637,20 @@ class AverageFrame(Frame):
                     chunk_stack[i] = frame.image_array[slc]
 
                 # Add the median of the chunk stack to the average array:
-                assert chunk_stack is not None  # make type checker happy
+                if chunk_stack is None:
+                    raise ValueError  # just to make the type checker happy
+
                 chunk_median = np.median(chunk_stack, axis=0)
                 avg_array[slc] = chunk_median
 
-            avg_array = avg_array.astype(dtype)
-            return avg_array
+            return avg_array.astype(dtype)
 
-        raise ValueError(f"Unknown average function: {avg_func}.")
+        msg = f"Unknown average function: {avg_func}."
+        raise ValueError(msg)
 
 
 class MasterDark(AverageFrame):
-    """
-    A class representing a master dark frame in a celestack project.
+    """A class representing a master dark frame in a celestack project.
 
     A MasterDark is a special kind of AverageFrame, which wraps around the average of
     multiple DarkFrames.
@@ -623,13 +659,23 @@ class MasterDark(AverageFrame):
     the attributes and methods of the AverageFrame and Frame classes.
     """
 
-    def __init__(self, project: str, name: str, frames: list[DarkFrame]):
+    def __init__(self, project: str, name: str, frames: list[DarkFrame]) -> None:
+        """Initialize the MasterDark frame.
+
+        The constructor will create a new frame by averaging the passed frames together
+        and saving the result to the project folder.
+
+        Args:
+            project: The name of the project to which this frame belongs.
+            name: The name of the frame. This is assigned by the project and usually
+                corresponds to the name of the original image.
+            frames: A list of DarkFrames to average together.
+        """
         super().__init__(project=project, name=name, frames=frames, avg_func="median")
 
 
 class AverageLight(AverageFrame):
-    """
-    A class representing an average light frame in a celestack project.
+    """A class representing an average light frame in a celestack project.
 
     An AverageLight is a special kind of AverageFrame, which wraps around the average of
     multiple LightFrames.
@@ -644,9 +690,8 @@ class AverageLight(AverageFrame):
 
     NON_STATE_ATTRS = AverageFrame.NON_STATE_ATTRS | {"clusters_array", "mask_array"}
 
-    def __init__(self, project: str, name: str, frames: list[LightFrame]):
-        """
-        Initializes the AverageLight frame.
+    def __init__(self, project: str, name: str, frames: list[LightFrame]) -> None:
+        """Initialize the AverageLight frame.
 
         The constructor will create a new frame by averaging the passed frames together
         and saving the result to the project folder.
@@ -665,10 +710,10 @@ class AverageLight(AverageFrame):
         super().__init__(project=project, name=name, frames=frames, avg_func="median")
 
     def cluster_pixels(self, n_clusters: int) -> None:
-        """
-        This method will cluster the pixels in the original image in the relevant
-        feature space, to separate the sky pixels from the foreground pixels.
+        """Cluster the pixels in the original image for sky-foreground separation.
 
+        The clustering is done in a feature space relevant for the sky-foreground
+        separation.
         The feature space is defined as the RGB values of the pixels, plus their
         coordinates in the image.
         The clustering is done using the K-Means algorithm.
@@ -713,8 +758,7 @@ class AverageLight(AverageFrame):
         self.clusters_array = labels.reshape(h, w).astype(np.uint8)
 
     def plot_clusters(self) -> go.Figure:
-        """
-        Plots the clusters array as a Plotly figure.
+        """Plot the clusters array as a Plotly figure.
 
         The method will create a Plotly figure containing the clusters array, with
         different colors for each cluster.
@@ -723,12 +767,12 @@ class AverageLight(AverageFrame):
             A Plotly figure containing the clusters array.
         """
         if self.clusters_array is None:
-            raise ValueError("Clusters array is not initialized.")
+            msg = "Clusters array is not initialized."
+            raise ValueError(msg)
         return utils.plot_image(self.clusters_array)
 
     def initialize_mask(self, foreground_cluster_labels: list[int]) -> None:
-        """
-        Initializes the mask array based on the clusters array.
+        """Initialize the mask array based on the clusters array.
 
         The method will take the list of foreground cluster labels and turn the
         clusters array into a boolean mask, with the foreground pixels set to True.
@@ -740,19 +784,20 @@ class AverageLight(AverageFrame):
                 considered as foreground.
         """
         if self.clusters_array is None:
-            raise ValueError("Clusters array is not initialized.")
+            msg = "Clusters array is not initialized."
+            raise ValueError(msg)
         self.mask_array = np.isin(self.clusters_array, foreground_cluster_labels)
 
     def set_mask_in_box(
         self,
+        *,
         value: bool,
         x1: int | None = None,
         x2: int | None = None,
         y1: int | None = None,
         y2: int | None = None,
     ) -> None:
-        """
-        Set the mask in a rectangular box.
+        """Set the mask in a rectangular box.
 
         The method will set the pixels in the specified rectangular area to True in the
         mask array.
@@ -766,12 +811,12 @@ class AverageLight(AverageFrame):
             y2: The bottom Y coordinate of the box. Optional.
         """
         if self.mask_array is None:
-            raise ValueError("Mask array is not initialized.")
+            msg = "Mask array is not initialized."
+            raise ValueError(msg)
         self.mask_array[slice(y1, y2), slice(x1, x2)] = value
 
     def create_mask(self, name: str = "Mask") -> Mask:
-        """
-        Creates a mask frame from the average light frame.
+        """Create a mask frame from the average light frame.
 
         The method will create a new Mask object from the mask array and save it to the
         project folder.
@@ -785,10 +830,10 @@ class AverageLight(AverageFrame):
             project
         """
         if self.mask_array is None:
-            raise ValueError("Mask array is not initialized.")
-        mask = Mask(
+            msg = "Mask array is not initialized."
+            raise ValueError(msg)
+        return Mask(
             project=self.project,
             name=name,
             img_array=self.mask_array,
         )
-        return mask

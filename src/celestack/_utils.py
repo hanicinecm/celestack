@@ -16,8 +16,7 @@ from plotly import graph_objects as go
 
 
 def read_image(img_path: str | PathLike) -> np.ndarray:
-    """
-    Reads an image file and returns its pixel data as a NumPy array.
+    """Read an image file and return its pixels as a NumPy array.
 
     It is designed to handle multiple image formats, predominantly the TIFF format
     (in both 8-bit and 16-bit color depth), and supports both grayscale and RGB images.
@@ -42,10 +41,12 @@ def read_image(img_path: str | PathLike) -> np.ndarray:
 
 
 def save_tiff(
-    array: np.ndarray, img_path: str | PathLike, overwrite: bool = False
+    array: np.ndarray,
+    img_path: str | PathLike,
+    *,
+    overwrite: bool = False,
 ) -> None:
-    """
-    Saves a NumPy array as a TIFF compressionless tiff.
+    """Save a NumPy array as a compressionless TIFF.
 
     This function is used both for saving the compressed images and the created
     full-resolution full-depth images (such as the master dark).
@@ -64,14 +65,14 @@ def save_tiff(
     TODO: Add support for metadata.
     """
     if not overwrite and Path(img_path).exists():
-        raise FileExistsError(f"File '{img_path}' already exists.")
+        msg = f"File '{img_path}' already exists. Use `overwrite=True` to overwrite it."
+        raise FileExistsError(msg)
 
     tifffile.imwrite(img_path, array, compression=None)
 
 
 def read_exif_data(img_path: str | PathLike) -> dict[str, str]:
-    """
-    Reads the selected EXIF data from an image file.
+    """Read selected EXIF data from an image file.
 
     Args:
         img_path: The path to the image file.
@@ -91,21 +92,18 @@ def read_exif_data(img_path: str | PathLike) -> dict[str, str]:
         "EXIF LensModel",
     ]
 
-    with open(img_path, "rb") as img_file:
+    with Path(img_path).open("rb") as img_file:
         exif_data_raw = exifread.process_file(img_file, details=False)
 
-    exif_data = {
+    return {
         tag.split()[1]: str(value).strip()
         for tag, value in exif_data_raw.items()
         if tag in selected_tags
     }
 
-    return exif_data
-
 
 def get_bit_depth(img_array: np.ndarray) -> int:
-    """
-    Determines the bit depth of an image array.
+    """Determine the bit depth of an image array.
 
     Args:
         img_array: The image array.
@@ -115,13 +113,13 @@ def get_bit_depth(img_array: np.ndarray) -> int:
     """
     depth = {"uint8": 8, "uint16": 16}.get(img_array.dtype.name)
     if depth is None:
-        raise ValueError(f"Unsupported array data type: '{img_array.dtype.name}'.")
+        msg = f"Unsupported array data type: '{img_array.dtype.name}'."
+        raise ValueError(msg)
     return depth
 
 
 def compress_image(img_array: np.ndarray, downscale_factor: int = 1) -> np.ndarray:
-    """
-    Creates a compressed image array from the original image array.
+    """Create a compressed image array from the original image array.
 
     The compressed image is an 8-bit grayscale, optionally downscaled by a specified
     factor. The downscaling is done by averaging the pixel values in blocks of size
@@ -134,6 +132,8 @@ def compress_image(img_array: np.ndarray, downscale_factor: int = 1) -> np.ndarr
 
     Returns:
         A NumPy array representing the compressed image.
+
+    TODO: Refactor this - should be called `create_grayscale_image` or similar...
     """
     depth = get_bit_depth(img_array)
 
@@ -157,34 +157,38 @@ def compress_image(img_array: np.ndarray, downscale_factor: int = 1) -> np.ndarr
     # Convert to 8-bit:
     img_array = img_array / (2**depth - 1) * 255
     img_array[img_array > 255] = 255
-    img_array = img_array.astype(np.uint8)
-
-    return img_array
+    return img_array.astype(np.uint8)
 
 
 def plot_image(
     array: np.ndarray,
-    width: int = 1200,
-    height: int = 900,
+    size: tuple[int, int] = (1200, 900),
+    *,
     interactive: bool = False,
 ) -> go.Figure:
-    """
-    Displays an image using matplotlib.
+    """Plot an image as a Plotly figure.
+
+    The figure pixel dimensions can be set using the `width` and `height` parameters
+    and the image can be displayed either as a static image or as an interactive
+    map where each pixel can be hovered over to see its coordinates and value (slower).
 
     Args:
         array: The image array to display.
-        width: The width of the figure in pixels. Optional, defaults to 1200.
-        height: The height of the figure in pixels. Optional, defaults to 900.
+        size: The size of the figure in pixels, as a tuple (width, height).
         interactive: If True, the image will be displayed in an interactive Plotly
             figure, where each pixel can be hovered over to see its coordinates and
             value. Optional, defaults to False.
 
     Returns:
         A Plotly figure object containing the image.
+
+    TODO: Make the size parameter optional - this will require redefining the layout
+        of the figure.
     """
-    if not array.ndim == 2:
+    if array.ndim != 2:
+        msg = "Only 2D arrays (grayscale images) are supported for plotting."
         raise NotImplementedError(
-            "Only 2D arrays (grayscale images) are supported for plotting."
+            msg,
         )
 
     # Get the image dimensions
@@ -205,36 +209,41 @@ def plot_image(
         # Add the image to the figure as a background
         fig.update_layout(
             images=[
-                dict(
-                    source="data:image/png;base64," + img_base64,
-                    xref="x",
-                    yref="y",
-                    x=0,
-                    y=0,
-                    sizex=img_width,
-                    sizey=img_height,
-                    sizing="stretch",
-                    opacity=1.0,
-                    layer="below",
-                )
+                {
+                    "source": "data:image/png;base64," + img_base64,
+                    "xref": "x",
+                    "yref": "y",
+                    "x": 0,
+                    "y": 0,
+                    "sizex": img_width,
+                    "sizey": img_height,
+                    "sizing": "stretch",
+                    "opacity": 1.0,
+                    "layer": "below",
+                },
             ],
         )
 
     # Create a Plotly figure with the image in the background
     fig.update_layout(
-        xaxis=dict(range=[0, img_width], visible=False, showgrid=False, zeroline=False),
-        yaxis=dict(
-            range=[img_height, 0],
-            visible=False,
-            showgrid=False,
-            zeroline=False,
-            scaleanchor="x",
-        ),
-        width=width,
-        height=height,
+        xaxis={
+            "range": [0, img_width],
+            "visible": False,
+            "showgrid": False,
+            "zeroline": False,
+        },
+        yaxis={
+            "range": [img_height, 0],
+            "visible": False,
+            "showgrid": False,
+            "zeroline": False,
+            "scaleanchor": "x",
+        },
+        width=size[0],
+        height=size[1],
         paper_bgcolor="rgba(255,255,255,0)",
         plot_bgcolor="rgba(255,255,255,0)",
-        margin=dict(l=0, r=0, t=30, b=0),
+        margin={"l": 0, "r": 0, "t": 30, "b": 0},
     )
 
     return fig
@@ -244,19 +253,21 @@ def find_stars(
     array: np.ndarray,
     threshold: float,
     fwhm: float,
+    *,
     max_roundness: float = 1.0,
     min_separation: float = 1.5,
     mask: np.ndarray | None = None,
     exclude_border: bool = True,
     show: bool = False,
 ) -> pd.DataFrame:
-    """
-    A helper function to find stars in an image using the DAOStarFinder algorithm.
+    """Find stars in an image array using the DAOStarFinder algorithm.
 
-    This function uses the `photutils` library to detect stars in an image. It
-    calculates the background noise using the median absolute deviation (MAD) and
+    This function uses the `photutils` library to detect stars in an array.
+    It calculates the background noise using the median absolute deviation (MAD) and
     uses the DAOStarFinder algorithm to find sources in the image. The function
     returns a pandas DataFrame containing the detected stars.
+
+    TODO: Change the table to a polars DataFrame.
 
     The stars with |roundness| > `max_roundness` are filtered out.
     Also, the stars close to the image border are filtered out, as are the stars within
@@ -309,11 +320,11 @@ def find_stars(
             x=sources["xcentroid"],
             y=sources["ycentroid"],
             mode="markers",
-            marker=dict(
-                size=sources["flux"] / np.max(sources["flux"]) * 10,
-                color=sources["flux"],
-                colorscale="Viridis",
-            ),
+            marker={
+                "size": sources["flux"] / np.max(sources["flux"]) * 10,
+                "color": sources["flux"],
+                "colorscale": "Viridis",
+            },
             name="Stars",
         )
         fig.update_layout(

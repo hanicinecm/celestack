@@ -1,13 +1,10 @@
-"""
-A module dedicated to discovering paths and resources for Celestack.
-"""
+"""A module dedicated to discovering paths and resources for Celestack."""
 
 from pathlib import Path
 
 
 def get_projects_root() -> Path:
-    """
-    Returns the root directory for Celestack projects.
+    """Return the root directory for Celestack projects.
 
     The directory will be created if it does not already exist.
 
@@ -20,8 +17,7 @@ def get_projects_root() -> Path:
 
 
 def get_project_dir(project_name: str) -> Path:
-    """
-    Returns the directory for a specific Celestack project.
+    """Return the Celestack project directory.
 
     This function will also create the directory (and any necessary parent directories)
     if it does not already exist.
@@ -38,9 +34,7 @@ def get_project_dir(project_name: str) -> Path:
 
 
 def get_project_frames_dir(project_name: str) -> Path:
-    """
-    Returns the path for the directory in a specific Celestack project, where the
-    frames are stored.
+    """Return the frames directory for the specific Celestack project.
 
     In the frames directory, the frame states are stored in configuration files, as well
     as the compressed images and any newly created full-res images.
@@ -59,8 +53,7 @@ def get_project_frames_dir(project_name: str) -> Path:
 
 
 def get_frame_state_path(project_name: str, frame_name: str) -> Path:
-    """
-    Returns the path to the YAML file for a specific frame in a Celestack project.
+    """Return the path to the YAML file for a specific frame in a Celestack project.
 
     The YAML file contains the state of the frame, including its metadata and
     configuration and it has the same name as the original image, but with a `.yaml`
@@ -77,8 +70,7 @@ def get_frame_state_path(project_name: str, frame_name: str) -> Path:
 
 
 def get_stack_state_path(project_name: str) -> Path:
-    """
-    Returns the path to the YAML file for the Stack state in a Celestack project.
+    """Return the path to the Stack state file in a Celestack project.
 
     The YAML file contains the state of the Stack class belonging to the project.
 
@@ -92,11 +84,9 @@ def get_stack_state_path(project_name: str) -> Path:
 
 
 def get_stars_table_path(project_name: str) -> Path:
-    """
-    Returns the path to the CSV file for the stars table belonging to the FrameStack
-    in a Celestack project.
+    """Return the path to the FrameStack Stars Table from a Celestack project.
 
-    The CSV file contains the stars table, which is a list of stars across the frames,
+    The Stars Table is a table of stars recognized across the frames,
     with data such as image coordinates, flux, unique IDs, which frame they belong to,
     and other data.
 

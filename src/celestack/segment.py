@@ -1,3 +1,5 @@
+"""A module defining the functionality for representing a segment of a frame."""
+
 from dataclasses import dataclass
 
 import numpy as np
@@ -9,8 +11,7 @@ import celestack._utils as utils
 
 @dataclass(frozen=True)
 class SegmentBox:
-    """
-    A class representing the rectangle, which will define the segment of a frame.
+    """A class representing the rectangle, which will define the segment of a frame.
 
     The box is defined by its top-left coordinate (x1, y1) and bottom-right coordinate
     (x2, y2). All are integers - indices of the pixel in the image.
@@ -24,8 +25,7 @@ class SegmentBox:
 
 
 class Segment:
-    """
-    A class representing a segment of a frame.
+    """A class representing a segment of a frame.
 
     The segment is defined by its box (x1, y1, x2, y2) and the pixel array.
     The pixel array is a 2D NumPy array representing the pixel values of the segment.
@@ -37,10 +37,12 @@ class Segment:
     """
 
     def __init__(
-        self, box: SegmentBox, array: np.ndarray, mask: np.ndarray | None = None
-    ):
-        """
-        Initializes the Segment object with a box and an array.
+        self,
+        box: SegmentBox,
+        array: np.ndarray,
+        mask: np.ndarray | None = None,
+    ) -> None:
+        """Initialize the Segment object with a box and an array.
 
         The array should be a 2D NumPy array in grayscale 8-bit format (uint8).
         The segments are normally instantiated only from the sections of the
@@ -57,23 +59,7 @@ class Segment:
         """
         self.box = box
         self.array = array
-        self._mask = mask
-
-    @property
-    def mask(self) -> np.ndarray:
-        """
-        Returns the mask of the segment.
-
-        If no mask was provided during initialization, a default mask is created
-        with all pixels set to True (no masking).
-
-        Returns:
-            A boolean NumPy array representing the mask of the segment.
-        """
-        if self._mask is None:
-            # Create a default mask with all pixels set to True (no masking)
-            self._mask = np.ones_like(self.array, dtype=bool)
-        return self._mask
+        self.mask = mask
 
     def find_stars(
         self,
@@ -83,8 +69,7 @@ class Segment:
         min_separation: float,
         init_thresh: float = 4.0,
     ) -> pd.DataFrame:
-        """
-        Finds stars in the segment and return them in a pandas DataFrame table.
+        """Find stars in the segment and return them in a pandas DataFrame table.
 
         The stars are found using the DAOStarFinder algorithm from the photutils
         library, and the method intelligently adjusts the algorithm's threshold to find
@@ -103,7 +88,7 @@ class Segment:
         and with unique IDs as index.
 
         Args:
-            final_density: The final density of the found stars in the segment, in
+            density: The final density of the found stars in the segment, in
                 stars per 10,000 sky pixels.
             fwhm: The full width at half maximum (FWHM) of the stars in [px].
                 This is one of the parameters of the star finding algorithm and might
@@ -132,9 +117,9 @@ class Segment:
         """
         # Calculate the number of stars to find:
         n_pixels = self.array.size
-        if self._mask is not None:
-            n_pixels -= np.sum(self._mask)
-        n = int(round(n_pixels * density / 10000))
+        if self.mask is not None:
+            n_pixels -= np.sum(self.mask)
+        n = round(n_pixels * density / 10000)
 
         # Find the sources:
         # Start with the `init_thresh * bkg_mad` threshold and iterate the threshold
@@ -154,14 +139,14 @@ class Segment:
                 fwhm=fwhm,
                 max_roundness=max_roundness,
                 min_separation=min_separation,
-                mask=self._mask,
+                mask=self.mask,
             )
             # how far are we from the target number of sources?
             new_delta_n = len(new_sources) - target_n
             if delta_n is not None and abs(new_delta_n) > abs(delta_n):
                 # we're further away from target than in the last iteration - stop...
                 break
-            elif delta_n is not None and abs(new_delta_n) == abs(delta_n):
+            if delta_n is not None and abs(new_delta_n) == abs(delta_n):
                 # we're not getting closer to the target, but we don't want to stop
                 # right away...
                 n_iters_stagnating += 1
@@ -195,17 +180,14 @@ class Segment:
         stars_table["fwhm"] = fwhm
         stars_table["threshold"] = thresh
 
-        stars_table = stars_table[["x", "y", "flux", "threshold", "fwhm"]].reset_index(
-            drop=True
+        return stars_table[["x", "y", "flux", "threshold", "fwhm"]].reset_index(
+            drop=True,
         )
-        return stars_table
 
     def plot(self) -> go.Figure:
-        """
-        Plot the segment.
+        """Plot the segment.
 
         Returns:
             A Plotly figure object containing the image.
         """
-        fig = utils.plot_image(self.array)
-        return fig
+        return utils.plot_image(self.array)
