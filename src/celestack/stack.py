@@ -617,7 +617,12 @@ class FrameStack:
         discovery.get_stack_state_path(self.project).unlink(missing_ok=True)
         discovery.get_stars_table_path(self.project).unlink(missing_ok=True)
 
-    def plot(self, frame: Frame | None = None) -> go.Figure:
+    def plot(
+        self,
+        frame: Frame | None = None,
+        *,
+        show_segments: bool = False,
+    ) -> go.Figure:
         """Make the stack plot and return it as a Plotly figure.
 
         Optionally, the underlying frame can be selected by passing any frame object
@@ -633,6 +638,7 @@ class FrameStack:
         Args:
             frame: The frame to plot. If not passed, a frame will be selected
                 automatically (and more or less intelligently) from the stack.
+            show_segments: If True, the segment boxes will be plotted as well.
 
         Returns:
             A Plotly figure with the stack plot. The plot will contain the underlying
@@ -668,7 +674,27 @@ class FrameStack:
         # Plot the selected frame:
         fig = frame.plot()
 
+        # Plot the segment boxes, if requested:
+        if show_segments and self.segment_boxes:
+            fig.update_layout(showlegend=True)
+            segments_array = np.vstack(
+                [
+                    np.vstack([seg.to_array(), np.array([np.nan, np.nan])])
+                    for seg in self.segment_boxes
+                ],
+            )
+            fig.add_trace(
+                go.Scatter(
+                    x=segments_array[:, 0],
+                    y=segments_array[:, 1],
+                    mode="lines",
+                    line={"width": 1, "color": "red"},
+                    name="Segment Boxes",
+                ),
+            )
+
         if self.stars_table is not None:
+            fig.update_layout(showlegend=True)
             colorscale = "Viridis"
 
             # Add the stars to the plot, if any are detected for the selected frame:
@@ -698,40 +724,37 @@ class FrameStack:
                 ),
             )
 
-            fig.update_layout(showlegend=True)
-
             # If the stars have been already propagated to any other frames, add the
             # trails as separate traces:
-            stars_colors = stars_in_frame.set_index("id")["flux"]
-            vmin, vmax = stars_colors.min(), stars_colors.max()
-            stars_colors_norm = (stars_colors - vmin) / (vmax - vmin)
-            rgb_dict = dict(
-                zip(
-                    stars_colors.index,
-                    pc.sample_colorscale(
-                        colorscale,
-                        stars_colors_norm,
-                        colortype="rgb",
-                    ),
-                    strict=False,
-                ),
-            )
-
-            # Add a dummy trace to control the stars trails traces in one legend group:
-            legend_group_name = "star_trails"
-            fig.add_trace(
-                go.Scatter(
-                    x=[None],
-                    y=[None],
-                    mode="lines",
-                    line={"width": 1, "color": "rgb(100, 100, 100)"},
-                    name="Star Trails",  # Shown in the legend
-                    legendgroup=legend_group_name,
-                    showlegend=True,
-                ),
-            )
-
             if len(self.stars_table.frame.unique()) > 1:
+                stars_colors = stars_in_frame.set_index("id")["flux"]
+                vmin, vmax = stars_colors.min(), stars_colors.max()
+                stars_colors_norm = (stars_colors - vmin) / (vmax - vmin)
+                rgb_dict = dict(
+                    zip(
+                        stars_colors.index,
+                        pc.sample_colorscale(
+                            colorscale,
+                            stars_colors_norm,
+                            colortype="rgb",
+                        ),
+                        strict=False,
+                    ),
+                )
+
+                # Add a dummy trace to control the trails traces in one legend group:
+                legend_group_name = "star_trails"
+                fig.add_trace(
+                    go.Scatter(
+                        x=[None],
+                        y=[None],
+                        mode="lines",
+                        line={"width": 1, "color": "rgb(100, 100, 100)"},
+                        name="Star Trails",  # Shown in the legend
+                        legendgroup=legend_group_name,
+                        showlegend=True,
+                    ),
+                )
                 star_trails = self.stars_table.sort_values(by=["t"])
                 for star_id in sorted(star_trails["id"].unique()):
                     star_trail = star_trails[star_trails["id"] == star_id]

@@ -23,6 +23,24 @@ class SegmentBox:
     x2: int
     y2: int
 
+    def to_array(self) -> np.ndarray:
+        """Convert the box to a NumPy array representing its polygon.
+
+        Returns:
+            A NumPy array with the shape (5, 2) containing the coordinates of the box
+            as a polygon.
+        """
+        return np.array(
+            [
+                [self.x1, self.y1],
+                [self.x2, self.y1],
+                [self.x2, self.y2],
+                [self.x1, self.y2],
+                [self.x1, self.y1],  # Closing the polygon
+            ],
+            dtype=np.int32,
+        )
+
 
 class Segment:
     """A class representing a segment of a frame.

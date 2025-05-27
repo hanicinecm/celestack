@@ -3,6 +3,7 @@
 from os import PathLike
 
 import numpy as np
+import pandas as pd
 from plotly import graph_objects as go
 from sklearn.cluster import KMeans
 
@@ -140,31 +141,29 @@ class LightFrame(Frame):
         self,
         pos: tuple[float, float],
         fwhm: float,
-        threshold: float,
+        init_thresh: float,
         max_roundness: float,
         min_separation: float,
     ) -> dict[str, float] | None:
         """Find a single star in the light frame in the proximity of given point.
 
-        If the expected pixel coordinates are outside the image or in the foreground,
-        the method will return None.
-
         The method will slice the image array around the given coordinates with the
         size of 2 * min_separation * fwhm and run the star finder inside the slice.
 
-        If a single star is found, its data will be returned as a dictionary.
-        If more than one star is found, the data of the star closest to the expected
-        position will be returned.
-        If no stars are found, the method will return None.
+        If the star can found, its data will be returned as a dictionary.
 
-        TODO: Will need to distinguish between pos outside sky and failure to find
+        If the star cannot be found, the method will return None.
+
+        If the expected pixel coordinates are outside the image or in the foreground,
+        the method will raise a ValueError.
 
         Args:
             pos: The (x, y) coordinates of the expected star position in the original
                 image, in pixels.
             fwhm: The full width at half maximum (FWHM) for the star finder.
-            threshold: The threshold for finding stars, in units of standard deviations
-                of the background noise.
+            init_thresh: The threshold for finding star, in units of standard deviations
+                of the background noise. This is the initial guess, it will be tweaked
+                until a single star is found.
             max_roundness: The maximum roundness of the stars (see the DAOStarFinder
                 algorithm).
             min_separation: The minimum separation between stars, in the units of fwhm.
@@ -182,14 +181,13 @@ class LightFrame(Frame):
         # Round the coordinates to the nearest pixel:
         x, y = (round(u) for u in pos)
 
-        # Check if the coordinates are inside the image:
+        # Check if the coordinates belong to the sky:
         if x < 0 or x >= self.width or y < 0 or y >= self.height:
-            return None
-
-        # Check if the coordinates are in the foreground:
-        mask_array = self.mask_array
-        if mask_array is not None and mask_array[y, x]:
-            return None
+            msg = "Coordinates are outside the image bounds."
+            raise ValueError(msg)
+        if self.mask_array is not None and self.mask_array[y, x]:
+            msg = "Coordinates are in the foreground (masked) area."
+            raise ValueError(msg)
 
         # Slice the image array around the given coordinates:
         x1 = max(0, round(x - min_separation * fwhm))
@@ -198,42 +196,57 @@ class LightFrame(Frame):
         y2 = min(self.height, round(y + min_separation * fwhm))
         slice_array = self.array_gs[y1:y2, x1:x2]
 
-        # If the slice is empty, return None:
-        if not slice_array.size:
-            return None
+        def _source_to_star_dict(
+            source: pd.Series, threshold: float
+        ) -> dict[str, float]:
+            """Convert a source Series to a star dictionary."""
+            return {
+                "x": round(source["xcentroid"] + x1, 2),
+                "y": round(source["ycentroid"] + y1, 2),
+                "flux": int(source["flux"]),
+                "threshold": round(threshold, 2),
+                "fwhm": round(fwhm, 2),
+            }
 
-        # Find the stars in the slice:
+        # First, check if there is already exactly one star at the initial threshold
         sources = utils.find_stars(
             array=slice_array,
-            threshold=threshold,
+            threshold=init_thresh,
             fwhm=fwhm,
             max_roundness=max_roundness,
             min_separation=min_separation,
             exclude_border=False,
         )
+        if sources is not None and len(sources) == 1:
+            return _source_to_star_dict(sources.iloc[0], threshold=init_thresh)
 
+        # Binary search for a threshold that yields exactly one star
         if sources is None or not len(sources):
-            # If no stars are found, return None:
-            return None
-
-        if len(sources) == 1:
-            # If exactly one star is found, return its data:
-            star = sources.iloc[0]
+            min_thresh = 2.0  # Arbitrary lower limit for the search
+            max_thresh = init_thresh
         else:
-            # If more than one star found, return the one closer to the center:
-            dist = np.sqrt(
-                (sources["xcentroid"] - slice_array.shape[1] / 2) ** 2
-                + (sources["ycentroid"] - slice_array.shape[0] / 2) ** 2,
-            )
-            star = sources.iloc[np.argmin(dist)]
+            min_thresh = init_thresh
+            max_thresh = 20.0  # Arbitrary upper limit for the search
 
-        return {
-            "x": round(star["xcentroid"] + x1, 2),
-            "y": round(star["ycentroid"] + y1, 2),
-            "flux": int(star["flux"]),
-            "threshold": round(threshold, 2),
-            "fwhm": fwhm,
-        }
+        while max_thresh - min_thresh > 0.05:
+            mid_thresh = (min_thresh + max_thresh) / 2
+            sources = utils.find_stars(
+                array=slice_array,
+                threshold=mid_thresh,
+                fwhm=fwhm,
+                max_roundness=max_roundness,
+                min_separation=min_separation,
+                exclude_border=False,
+            )
+            if sources is None or not len(sources):
+                max_thresh = mid_thresh
+            elif len(sources) > 1:
+                min_thresh = mid_thresh
+            else:
+                # Found exactly one star
+                return _source_to_star_dict(sources.iloc[0], threshold=mid_thresh)
+
+        return None
 
 
 class Mask(Frame):
@@ -419,7 +432,7 @@ class AverageLight(AverageFrame):
         if self._clusters_array is None:
             msg = "Clusters array is not initialized."
             raise ValueError(msg)
-        return utils.plot_image(self._clusters_array)
+        return utils.plot_image(self._clusters_array, interactive=True)
 
     def initialize_mask(self, foreground_cluster_labels: list[int]) -> None:
         """Initialize the mask array based on the clusters array.

@@ -118,13 +118,13 @@ class Frame:
         self.dtype = str(img_array.dtype.name)
         self.bit_depth = utils.get_bit_depth(img_array)
 
+        # A cache for the image arrays (it's private, so won't be dumped to the state):
+        self._cache: dict[str, np.ndarray] = {}
+
         # Save the full-quality and compressed image copies to the project folder:
         self.update_image(img_array)
         # Dump the state of the instance:
         self.dump_state()
-
-        # A cache for the image arrays (it's private, so won't be dumped to the state):
-        self._cache: dict[str, np.ndarray] = {}
 
     def __repr__(self) -> str:
         """Return a string representation of the Frame instance."""
