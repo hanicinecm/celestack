@@ -137,6 +137,24 @@ class LightFrame(Frame):
             mask = self.mask_array[box.y1 : box.y2, box.x1 : box.x2]
         return Segment(box=box, array=segment_array, mask=mask)
 
+    def is_in_sky(self, pos: tuple[float, float]) -> bool:
+        """Check if the the given coordinates point to sky.
+
+        Args:
+            pos: A tuple (x, y) representing the coordinates in the image.
+
+        Returns:
+            True if the position is in sky, False if it is a foreground pixel or out
+            of bounds of the image.
+        """
+        x, y = round(pos[0]), round(pos[1])
+
+        return (
+            0 <= x < self.width
+            and 0 <= y < self.height
+            and (self.mask_array is None or not self.mask_array[y, x])
+        )
+
     def find_star(
         self,
         pos: tuple[float, float],
@@ -221,6 +239,8 @@ class LightFrame(Frame):
             return _source_to_star_dict(sources.iloc[0], threshold=init_thresh)
 
         # Binary search for a threshold that yields exactly one star
+        # TODO: Perhaps do not dwell on a single star, but allow more and select closest
+        # TODO: Implement maximal allowed distance from the expected position
         if sources is None or not len(sources):
             min_thresh = 2.0  # Arbitrary lower limit for the search
             max_thresh = init_thresh

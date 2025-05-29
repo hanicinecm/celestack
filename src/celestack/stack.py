@@ -4,6 +4,7 @@ Each stack is referenced only by the project name, as only a single stack is all
 per project.
 """
 
+from functools import cached_property
 from pathlib import Path
 
 import numpy as np
@@ -335,6 +336,58 @@ class FrameStack:
         self.ref_frame = self.light_frames[ref_frame_name]
         self.dump_state()
 
+        # Clear the `t_series` property cache by deleting the attribute:
+        if hasattr(self, "t_series"):
+            del self.t_series
+
+    @cached_property
+    def t_series(self) -> pd.Series:
+        """Get the time coordinates of all the frames in the stack.
+
+        Get the time-like distance of each frame from the reference frame.
+        If the frames have exif data with the timestamp, we'll use that and the `t` will
+        be in seconds.
+
+        Note, that the
+
+        Returns:
+            The series of time of capture for each frame, relative to the reference
+            frame. The t is in [seconds] and the t of the reference frame is 0.
+            The output is a pandas Series with the frame names as index, times as values
+            and the name "t".
+
+        Raises:
+            ValueError: If the reference frame has not yet been set.
+            NotImplementedError: If the frames do not have exif data with the
+                timestamp.
+        """
+        # Basic sanity checks:
+        if self.ref_frame is None:
+            msg = "Reference frame has not yet been set."
+            raise ValueError(msg)
+
+        # Get the timestamps from the light frames' exif data:
+        try:
+            timestamps: dict[str, str] = {
+                frame_name: frame.exif_data["DateTimeOriginal"]
+                for frame_name, frame in self.light_frames.items()
+            }
+        except KeyError as err:
+            msg = (
+                "The frames do not have exif data with the timestamp. "
+                "Please implement a way to get the time of capture for each frame."
+            )
+            raise NotImplementedError(msg) from err
+
+        times = pd.Series(timestamps)
+        times = pd.to_datetime(times, format="%Y:%m:%d %H:%M:%S")
+
+        # Convert to seconds relative to the reference frame
+        times = (times - times[self.ref_frame.name]).dt.total_seconds()
+        times.name = "t"
+
+        return times
+
     def _find_optimal_fwhm(self) -> float:
         """Find the optimal star FWHM for the star finder.
 
@@ -532,6 +585,165 @@ class FrameStack:
         self.stars_table = stars_table
         self.dump_state()
 
+    def propagate_a_star(self, star_id: int) -> pd.DataFrame:
+        """Propagate a single star from the reference frame to the whole stack.
+
+        The method will try to match the star identified in the reference frame under
+        the given `star_id` to the same star in all other frames in the stack.
+
+        The method will not change the state of the stack, but rather will return a
+        *star trail* table, which contains the star's position in each frame of the
+        stack.
+
+        Args:
+            star_id: The ID of the star to propagate. This must be a valid ID from the
+                `stars_table` in the stack, which is only known in the reference frame.
+
+        Returns:
+            A pandas DataFrame containing the star trail, with the following columns:
+                - t: The time of capture of the frame, relative to the reference frame.
+                - x: The x coordinate of the star in the frame (in pixels).
+                - y: The y coordinate of the star in the frame (in pixels).
+                - flux: The flux of the star in the frame.
+                - threshold: The threshold used for the star finding in the frame.
+                - fwhm: The full width at half maximum of the star in the frame.
+                - in_sky: A boolean indicating if the star is in the sky. If False, by
+                    definition the star will have rest of the columns as NaN.
+
+        Raises:
+            ValueError: If the reference frame has not yet been set.
+            ValueError: If the star have not yet been detected in the reference frame.
+        """
+        # Start with the sanity checks:
+        if self.stars_table is None:
+            msg = "Stars have not yet been detected in the reference frame."
+            raise ValueError(msg)
+        if self.ref_frame is None:
+            msg = "Reference frame has not yet been set."
+            raise ValueError(msg)
+        star_data = self.stars_table[
+            (self.stars_table["id"] == star_id)
+            & (self.stars_table["frame"] == self.ref_frame.name)
+        ]
+        if len(star_data) != 1:
+            msg = f"The star {star_id} must have already been found in the ref frame."
+            raise ValueError(msg)
+
+        # Initialize the star trail table:
+        star_trail = pd.DataFrame(
+            index=list(self.light_frames),
+            columns=["t", "x", "y", "flux", "threshold", "fwhm"],
+            dtype=float,
+        )
+        star_trail["in_sky"] = True
+        star_trail["t"] = self.t_series
+        star_trail = star_trail.sort_values(by="t", key=lambda x: x.abs())
+
+        # Fill in the star position in the reference frame:
+        star_trail.loc[self.ref_frame.name, ["x", "y", "flux", "threshold", "fwhm"]] = (
+            star_data[["x", "y", "flux", "threshold", "fwhm"]].to_numpy()[0]
+        )
+        # Initialize the parameters for the star finder:
+        threshold: float = star_data.threshold.iloc[0]
+        fwhm: float = star_data.fwhm.iloc[0]
+        max_roundness = self.star_finder_params["max_roundness"]
+        min_separation = self.star_finder_params["min_separation"]
+        if not isinstance(max_roundness, float) or not isinstance(
+            min_separation, float
+        ):
+            msg = "The max_roundness and min_separation must be floats."
+            raise TypeError(msg)
+
+        # In several passes, go from the reference frame up and down the stack, always
+        # trying to find the star in the next frame in the vicinity of the expected
+        # position predicted by the rough position prediction model.
+        # Filling the positions into the `star_trail` table as we go.
+        num_stars_found = 1  # running variable for exit condition
+        for _ in range(10):
+            for frame_name in star_trail.index:
+                if pd.notna(star_trail.loc[frame_name, "x"]):
+                    # The star has already been found in this frame, skip it:
+                    continue
+
+                # Rough position prediction:
+                x, y = utils.predict_star_position_in_frame(
+                    star_trail[["t", "x", "y"]], frame_name
+                )
+                if np.isnan(x) or np.isnan(y):
+                    # The rough prediction failed, skip this frame:
+                    continue
+
+                # If the point is outside the image or not in the sky, also skip it:
+                frame = self.light_frames[frame_name]
+                if not frame.is_in_sky((x, y)):
+                    star_trail.loc[frame_name, "in_sky"] = False
+                    continue
+
+                # Attempt to find the star in the frame close to the predicted position:
+                star = frame.find_star(
+                    (x, y), fwhm, threshold, max_roundness, min_separation
+                )
+                if star is not None:
+                    # If the star was found, we'll use its coordinates:
+                    star_trail.loc[
+                        frame_name, ["x", "y", "flux", "threshold", "fwhm"]
+                    ] = [
+                        star["x"],
+                        star["y"],
+                        star["flux"],
+                        star["threshold"],
+                        star["fwhm"],
+                    ]
+            _num_stars_found = len(star_trail.x.dropna())
+            if _num_stars_found == num_stars_found:
+                # No new stars were found in this pass, stop the loop:
+                break
+            num_stars_found = _num_stars_found
+
+        # Final pimp-up of the star trail table:
+        star_trail.index.name = "frame"
+
+        return star_trail
+
+    def propagate_stars(self) -> None:
+        """Propagate all the stars from the reference frame to the whole stack.
+
+        The method will iterate over all the stars found in the reference frame and
+        propagate each of them to all other frames in the stack.
+        The star trails will be stored in the `stars_table` DataFrame.
+
+        Raises:
+            ValueError: If the stars have not yet been detected in the reference frame.
+            ValueError: If the reference frame has not yet been set.
+            ValueError: If the stars table contains any other frames than the ref frame.
+        """
+        # Basic sanity checks:
+        if self.stars_table is None:
+            msg = "Stars have not yet been detected in the reference frame."
+            raise ValueError(msg)
+        if self.ref_frame is None:
+            msg = "Reference frame has not yet been set."
+            raise ValueError(msg)
+        if list(self.stars_table["frame"].unique()) != [self.ref_frame.name]:
+            msg = "The stars table must only contain stars from the reference frame."
+            raise ValueError(msg)
+
+        # Iterate over all the stars in the reference frame and propagate them:
+        for star_id in PROGRESS_BAR(self.stars_table.id.unique(), "Propagating stars"):
+            # Propagate the star and get the star trail:
+            star_trail = self.propagate_a_star(star_id)
+            # Conform the table to the expected format in the stars table and drop the
+            # additional columns and the row for the reference frame (already in):
+            star_subtable = star_trail.drop(index=self.ref_frame.name)
+            star_subtable = star_subtable.loc[star_trail.in_sky, :].reset_index()
+            star_subtable["id"] = star_id
+            # Add the star trail to the stars table:
+            self.stars_table = pd.concat(
+                [self.stars_table, star_subtable[self.stars_table.columns]],
+                ignore_index=True,
+            )
+            self.dump_state()
+
     def dump_state(self) -> None:
         """Dump the current state of the stack to a YAML file.
 
@@ -694,11 +906,15 @@ class FrameStack:
             )
 
         if self.stars_table is not None:
+            stars_table = self.stars_table.loc[
+                (self.stars_table.x >= 0) & (self.stars_table.y >= 0)
+            ]
+
             fig.update_layout(showlegend=True)
             colorscale = "Viridis"
 
             # Add the stars to the plot, if any are detected for the selected frame:
-            stars_in_frame = self.stars_table[self.stars_table["frame"] == frame.name]
+            stars_in_frame = stars_table[stars_table["frame"] == frame.name]
             fig.add_trace(
                 go.Scatter(
                     x=stars_in_frame["x"],
@@ -726,7 +942,7 @@ class FrameStack:
 
             # If the stars have been already propagated to any other frames, add the
             # trails as separate traces:
-            if len(self.stars_table.frame.unique()) > 1:
+            if len(stars_table.frame.unique()) > 1:
                 stars_colors = stars_in_frame.set_index("id")["flux"]
                 vmin, vmax = stars_colors.min(), stars_colors.max()
                 stars_colors_norm = (stars_colors - vmin) / (vmax - vmin)
@@ -755,7 +971,7 @@ class FrameStack:
                         showlegend=True,
                     ),
                 )
-                star_trails = self.stars_table.sort_values(by=["t"])
+                star_trails = stars_table.sort_values(by=["t"])
                 for star_id in sorted(star_trails["id"].unique()):
                     star_trail = star_trails[star_trails["id"] == star_id]
                     color = rgb_dict.get(star_id, "rgb(100, 100, 100)")
