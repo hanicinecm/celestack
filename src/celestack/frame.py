@@ -158,6 +158,7 @@ class LightFrame(Frame):
     def find_star(
         self,
         pos: tuple[float, float],
+        margin: int,
         fwhm: float,
         init_thresh: float,
         max_roundness: float,
@@ -178,6 +179,9 @@ class LightFrame(Frame):
         Args:
             pos: The (x, y) coordinates of the expected star position in the original
                 image, in pixels.
+            margin: The margin around the expected position, in pixels. This is used to
+                determine the size of the slice around the expected position, where to
+                search for the star.
             fwhm: The full width at half maximum (FWHM) for the star finder.
             init_thresh: The threshold for finding star, in units of standard deviations
                 of the background noise. This is the initial guess, it will be tweaked
@@ -208,10 +212,10 @@ class LightFrame(Frame):
             raise ValueError(msg)
 
         # Slice the image array around the given coordinates:
-        x1 = max(0, round(x - min_separation * fwhm))
-        x2 = min(self.width, round(x + min_separation * fwhm))
-        y1 = max(0, round(y - min_separation * fwhm))
-        y2 = min(self.height, round(y + min_separation * fwhm))
+        x1 = max(0, round(x - margin))
+        x2 = min(self.width, round(x + margin))
+        y1 = max(0, round(y - margin))
+        y2 = min(self.height, round(y + margin))
         slice_array = self.array_gs[y1:y2, x1:x2]
 
         def _source_to_star_dict(

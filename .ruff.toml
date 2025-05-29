@@ -58,6 +58,7 @@ lint.ignore = [
     "D213",    # Pydocstyle - 1 blank line required before function docstring
     "COM812",  # Flake8-commas - Trailing comma in function call
     "C901",    # McCabe - Function is too complex
+    "W293",    # Pycodestyle - Blank line contains whitespace (fixed by Ruff anyway)
 ]
 
 lint.pylint.max-args = 8

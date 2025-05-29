@@ -72,6 +72,28 @@ class FrameStack:
         """Return the string representation of the FrameStack object."""
         return f"{self.__class__.__name__}({self.project})"
 
+    @cached_property
+    def _px_resolution(self) -> tuple[int, int]:
+        """The pixel width and height of the images in the stack."""
+        if self.ref_frame is not None:
+            frame = self.ref_frame
+        elif self.light_frames:
+            frame = next(iter(self.light_frames.values()))
+        else:
+            msg = "Stack does not contain any frames to determine its dimensions from."
+            raise ValueError(msg)
+        return frame.width, frame.height
+
+    @property
+    def width(self) -> int:
+        """The pixel width of the images in the stack."""
+        return self._px_resolution[0]
+
+    @property
+    def height(self) -> int:
+        """The pixel height of the images in the stack."""
+        return self._px_resolution[1]
+
     def load_frames(
         self,
         lf_paths: list[Path],
@@ -471,6 +493,20 @@ class FrameStack:
         self.dump_state()
         return fwhm
 
+    def _get_margin_for_star_finder(self) -> int:
+        """Get the pixel margin around the expected star position for the star finder.
+
+        The margin will be calculated as (min_separation * FWHM) - both saved
+        in the stack's `star_finder_params` dictionary.
+        """
+        min_separation = self.star_finder_params["min_separation"]
+        fwhm = self.star_finder_params["fwhm"]
+        if min_separation is None or fwhm is None:
+            msg = "The min_separation and fwhm must be set in the star_finder_params."
+            raise ValueError(msg)
+
+        return round(min_separation * fwhm)
+
     def detect_stars_in_ref_frame(self, n: int = 1000) -> None:
         """Detect roughly N stars in a single frame.
 
@@ -632,7 +668,7 @@ class FrameStack:
         # Initialize the star trail table:
         star_trail = pd.DataFrame(
             index=list(self.light_frames),
-            columns=["t", "x", "y", "flux", "threshold", "fwhm"],
+            columns=["t", "x_guess", "y_guess", "x", "y", "flux", "threshold", "fwhm"],
             dtype=float,
         )
         star_trail["in_sky"] = True
@@ -666,28 +702,36 @@ class FrameStack:
                     continue
 
                 # Rough position prediction:
-                x, y = utils.predict_star_position_in_frame(
+                x_guess, y_guess = utils.predict_star_position_in_frame(
                     star_trail[["t", "x", "y"]], frame_name
                 )
-                if np.isnan(x) or np.isnan(y):
+                if np.isnan(x_guess) or np.isnan(y_guess):
                     # The rough prediction failed, skip this frame:
                     continue
 
                 # If the point is outside the image or not in the sky, also skip it:
                 frame = self.light_frames[frame_name]
-                if not frame.is_in_sky((x, y)):
+                if not frame.is_in_sky((x_guess, y_guess)):
                     star_trail.loc[frame_name, "in_sky"] = False
                     continue
 
                 # Attempt to find the star in the frame close to the predicted position:
                 star = frame.find_star(
-                    (x, y), fwhm, threshold, max_roundness, min_separation
+                    pos=(x_guess, y_guess),
+                    margin=self._get_margin_for_star_finder(),
+                    fwhm=fwhm,
+                    init_thresh=threshold,
+                    max_roundness=max_roundness,
+                    min_separation=min_separation,
                 )
                 if star is not None:
                     # If the star was found, we'll use its coordinates:
                     star_trail.loc[
-                        frame_name, ["x", "y", "flux", "threshold", "fwhm"]
+                        frame_name,
+                        ["x_guess", "y_guess", "x", "y", "flux", "threshold", "fwhm"],
                     ] = [
+                        round(x_guess, 2),
+                        round(y_guess, 2),
                         star["x"],
                         star["y"],
                         star["flux"],
@@ -743,6 +787,10 @@ class FrameStack:
                 ignore_index=True,
             )
             self.dump_state()
+
+        # After propagating all the stars, all the frames in the stack are cached, which
+        # will take up a lot of memory - let's clear the cache:
+        self.clear_cache()
 
     def dump_state(self) -> None:
         """Dump the current state of the stack to a YAML file.
@@ -829,12 +877,17 @@ class FrameStack:
         discovery.get_stack_state_path(self.project).unlink(missing_ok=True)
         discovery.get_stars_table_path(self.project).unlink(missing_ok=True)
 
-    def plot(
-        self,
-        frame: Frame | None = None,
-        *,
-        show_segments: bool = False,
-    ) -> go.Figure:
+    def clear_cache(self) -> None:
+        """Clear the cache of all the frames in the stack."""
+        for frame in self.light_frames.values():
+            frame.clear_cache()
+        for frame in self.dark_frames.values():
+            frame.clear_cache()
+        for frame in [self.master_dark, self.avg_light, self.mask]:
+            if frame is not None:
+                frame.clear_cache()
+
+    def plot(self, frame: Frame | None = None) -> go.Figure:
         """Make the stack plot and return it as a Plotly figure.
 
         Optionally, the underlying frame can be selected by passing any frame object
@@ -850,7 +903,6 @@ class FrameStack:
         Args:
             frame: The frame to plot. If not passed, a frame will be selected
                 automatically (and more or less intelligently) from the stack.
-            show_segments: If True, the segment boxes will be plotted as well.
 
         Returns:
             A Plotly figure with the stack plot. The plot will contain the underlying
@@ -885,25 +937,6 @@ class FrameStack:
 
         # Plot the selected frame:
         fig = frame.plot()
-
-        # Plot the segment boxes, if requested:
-        if show_segments and self.segment_boxes:
-            fig.update_layout(showlegend=True)
-            segments_array = np.vstack(
-                [
-                    np.vstack([seg.to_array(), np.array([np.nan, np.nan])])
-                    for seg in self.segment_boxes
-                ],
-            )
-            fig.add_trace(
-                go.Scatter(
-                    x=segments_array[:, 0],
-                    y=segments_array[:, 1],
-                    mode="lines",
-                    line={"width": 1, "color": "red"},
-                    name="Segment Boxes",
-                ),
-            )
 
         if self.stars_table is not None:
             stars_table = self.stars_table.loc[
@@ -996,5 +1029,130 @@ class FrameStack:
                             legendgroup=legend_group_name,
                         ),
                     )
+
+        # Plot the segment boxes:
+        if self.segment_boxes:
+            fig.update_layout(showlegend=True)
+            segments_array = np.vstack(
+                [
+                    np.vstack([seg.to_array(), np.array([np.nan, np.nan])])
+                    for seg in self.segment_boxes
+                ],
+            )
+            fig.add_trace(
+                go.Scatter(
+                    x=segments_array[:, 0],
+                    y=segments_array[:, 1],
+                    mode="lines",
+                    line={"width": 1, "color": "red"},
+                    name="Segment Boxes",
+                    visible="legendonly" if self.stars_table is not None else "legend",
+                ),
+            )
+
+        return fig
+
+    def plot_star_trail(
+        self, *, star_id: int | None = None, trail_df: pd.DataFrame | None = None
+    ) -> go.Figure:
+        """Plot the trail of a single star across all frames in the stack.
+
+        The method will plot the trail of the star across the frames in the stack.
+        The star to plot can either be specified by its ID (in which case the star
+        data will be queried from the `stars_table`), or by passing its star trail
+        as a DataFrame returned by the `propagate_a_star` method.
+
+        The star positions across the stack will be plotted on the background of the
+        frames stacked in the "brightest" mode, so that the star pixels from all the
+        frames are visible.
+
+        Args:
+            star_id: The ID of the star to plot. Optional, if not passed, the `trail_df`
+                must be provided.
+            trail_df: The DataFrame containing the star trail. Optional, if not passed,
+                the `star_id` must be provided.
+
+        Returns:
+            A Plotly figure with the star trail plot.
+        """
+        # Basic sanity checks:
+        if sum([star_id is not None, trail_df is not None]) != 1:
+            msg = "Exactly one of `star_id` or `trail_df` must be provided."
+            raise ValueError(msg)
+
+        if trail_df is None:
+            # Extract the star trail from the stars table:
+            if self.stars_table is None:
+                msg = "Stars have not yet been detected in the stack."
+                raise ValueError(msg)
+            trail_df = self.stars_table.loc[self.stars_table.id == star_id]
+            trail_df = trail_df.sort_values(by="t").set_index("frame", drop=True)
+        else:
+            trail_df = trail_df.sort_values(by="t")
+
+        # Initialize the background from one of the frames:
+        margin = self._get_margin_for_star_finder()
+        x_min = max(round(trail_df.x.min() - margin), 0)
+        x_max = min(round(trail_df.x.max() + margin), self.width)
+        y_min = max(round(trail_df.y.min() - margin), 0)
+        y_max = min(round(trail_df.y.max() + margin), self.height)
+        bkg_frame = (
+            self.ref_frame if self.ref_frame else next(iter(self.light_frames.values()))
+        )
+        bkg_array = bkg_frame.array_gs[y_min:y_max, x_min:x_max]
+
+        # Add the pixels from all the frames in the stack into the background array:
+        for frame_name, row in trail_df.iterrows():
+            if frame_name == bkg_frame.name:
+                # Skip the background frame, it's already there:
+                continue
+            frame = self.light_frames[str(frame_name)]
+            x1 = max(round(row.x - margin), x_min)
+            x2 = min(round(row.x + margin), x_max)
+            y1 = max(round(row.y - margin), y_min)
+            y2 = min(round(row.y + margin), y_max)
+
+            # Add the pixels from the frame to the background array:
+            overlay = np.zeros_like(bkg_array)
+            overlay[y1 - y_min : y2 - y_min, x1 - x_min : x2 - x_min] = frame.array_gs[
+                y1:y2, x1:x2
+            ]
+            bkg_array = np.maximum(bkg_array, overlay)
+            frame.clear_cache()  # Clear the cache to save memory
+
+        fig = utils.plot_image(bkg_array)
+
+        # Add the star positions to the plot:
+        colors = pd.Series("yellow", index=trail_df.index, dtype="object")
+        if self.ref_frame is not None:
+            # Highlight the star position in the reference frame:
+            colors.loc[self.ref_frame.name] = "red"
+        fig.add_trace(
+            go.Scatter(
+                x=trail_df["x"] - x_min,
+                y=trail_df["y"] - y_min,
+                mode="markers",
+                marker={
+                    "size": (
+                        trail_df["flux"] / np.max(trail_df["flux"]) * 10
+                    ),  # Scale the marker size by flux
+                    "color": colors,
+                    "line": {"width": 1, "color": "black"},  # Add a black border
+                },
+                name=f"Star ID {star_id} Positions",
+                customdata=trail_df.reset_index()[
+                    ["frame", "x", "y", "flux", "threshold"]
+                ].values,
+                hovertemplate=(
+                    "Frame: %{customdata[0]}<br>"
+                    "x: %{customdata[1]:.2f}<br>"
+                    "y: %{customdata[2]:.2f}<br>"
+                    "Flux: %{customdata[3]:.2f}<br>"
+                    "Threshold: %{customdata[4]:.2f}<br>"
+                    "<extra></extra>"
+                ),
+            ),
+        )
+        fig.update_layout(showlegend=True)
 
         return fig
