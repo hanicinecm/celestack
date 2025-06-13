@@ -1,9 +1,10 @@
 """A module defining all the concrete Frame sub-classes for Celestack."""
 
+from datetime import UTC, datetime
 from os import PathLike
+from typing import cast
 
 import numpy as np
-import pandas as pd
 from plotly import graph_objects as go
 from sklearn.cluster import KMeans
 
@@ -72,14 +73,13 @@ class LightFrame(Frame):
 
         The method will also update the state of the frame in the YAML file.
 
+        Assumptions:
+        - The master dark frame is not yet set for this light frame.
+          If it is set, it will be subtracted again, which is not desired.
+
         Args:
             master_dark: The master dark frame to subtract from the light frame.
         """
-        # Check if the master dark is already set:
-        if self.master_dark_name is not None:
-            msg = "Master dark is already set."
-            raise ValueError(msg)
-
         # Set the master dark:
         self.master_dark_name = master_dark.name
 
@@ -155,6 +155,38 @@ class LightFrame(Frame):
             and (self.mask_array is None or not self.mask_array[y, x])
         )
 
+    def time(self) -> float:
+        """Return the (relative) time of the light frame aquisition.
+
+        The time does not necessarily have to have a unit, or be absolute.
+        It is simply a numerical value proportional to the actual time of the frame
+        aquisition.
+
+        For frames with Exif data, the time will be extracted from the timestamp (if
+        available) and will be arbitrarily in seconds since 1970-01-01.
+
+        Returns:
+            The numerical value proportional to the time of the frame aquisition.
+
+        Raises:
+            NotImplementedError:
+                If the frame does not have Exif data with the
+                timestamp. In such case, the time will have to be derived, e.g. from the
+                frame name (as digital cameras usually either but the timestamp in the
+                photos names, or the names have at least some sort of seq. suffix).
+                This is not yet implemented.
+        """
+        try:
+            ts = self.exif_data["DateTimeOriginal"]
+        except KeyError as err:
+            msg = f"The frame {self.name} does not have exif data with the timestamp."
+            raise NotImplementedError(msg) from err
+
+        dt = datetime.strptime(ts, "%Y:%m:%d %H:%M:%S").astimezone(UTC)
+        # Convert the datetime to a float representing seconds since the epoch:
+        epoch = datetime(1970, 1, 1, tzinfo=UTC)
+        return (dt - epoch).total_seconds()
+
     def find_star(
         self,
         pos: tuple[float, float],
@@ -204,11 +236,8 @@ class LightFrame(Frame):
         x, y = (round(u) for u in pos)
 
         # Check if the coordinates belong to the sky:
-        if x < 0 or x >= self.width or y < 0 or y >= self.height:
-            msg = "Coordinates are outside the image bounds."
-            raise ValueError(msg)
-        if self.mask_array is not None and self.mask_array[y, x]:
-            msg = "Coordinates are in the foreground (masked) area."
+        if not self.is_in_sky((x, y)):
+            msg = "Coordinates are either out of bounds or in the foreground."
             raise ValueError(msg)
 
         # Slice the image array around the given coordinates:
@@ -218,20 +247,18 @@ class LightFrame(Frame):
         y2 = min(self.height, round(y + margin))
         slice_array = self.array_gs[y1:y2, x1:x2]
 
-        def _source_to_star_dict(
-            source: pd.Series, threshold: float
-        ) -> dict[str, float]:
-            """Convert a source Series to a star dictionary."""
+        def _extract_star_data(sl: utils.StarsList, index: int = 0) -> dict[str, float]:
+            """Extract data of a single star from a StarsList instance."""
             return {
-                "x": round(source["xcentroid"] + x1, 2),
-                "y": round(source["ycentroid"] + y1, 2),
-                "flux": int(source["flux"]),
-                "threshold": round(threshold, 2),
-                "fwhm": round(fwhm, 2),
+                "x": round(sl.x[index] + x1, 2),
+                "y": round(sl.y[index] + y1, 2),
+                "flux": int(sl.flux[index]),
+                "threshold": round(sl.threshold[index], 2),
+                "fwhm": round(sl.fwhm[index], 2),
             }
 
         # First, check if there is already exactly one star at the initial threshold
-        sources = utils.find_stars(
+        stars_list = utils.find_stars(
             array=slice_array,
             threshold=init_thresh,
             fwhm=fwhm,
@@ -239,13 +266,13 @@ class LightFrame(Frame):
             min_separation=min_separation,
             exclude_border=False,
         )
-        if sources is not None and len(sources) == 1:
-            return _source_to_star_dict(sources.iloc[0], threshold=init_thresh)
+        if len(stars_list) == 1:
+            return _extract_star_data(stars_list)
 
         # Binary search for a threshold that yields exactly one star
         # TODO: Perhaps do not dwell on a single star, but allow more and select closest
         # TODO: Implement maximal allowed distance from the expected position
-        if sources is None or not len(sources):
+        if not stars_list:
             min_thresh = 2.0  # Arbitrary lower limit for the search
             max_thresh = init_thresh
         else:
@@ -254,7 +281,7 @@ class LightFrame(Frame):
 
         while max_thresh - min_thresh > 0.05:
             mid_thresh = (min_thresh + max_thresh) / 2
-            sources = utils.find_stars(
+            stars_list = utils.find_stars(
                 array=slice_array,
                 threshold=mid_thresh,
                 fwhm=fwhm,
@@ -262,13 +289,13 @@ class LightFrame(Frame):
                 min_separation=min_separation,
                 exclude_border=False,
             )
-            if sources is None or not len(sources):
+            if not stars_list:
                 max_thresh = mid_thresh
-            elif len(sources) > 1:
+            elif len(stars_list) > 1:
                 min_thresh = mid_thresh
             else:
                 # Found exactly one star
-                return _source_to_star_dict(sources.iloc[0], threshold=mid_thresh)
+                return _extract_star_data(stars_list)
 
         return None
 
@@ -284,10 +311,15 @@ class Mask(Frame):
         self,
         project: str,
         name: str,
+        *,
         img_path: str | PathLike | None = None,
         img_array: np.ndarray | None = None,
     ) -> None:
         """Initialize the Mask frame.
+
+        Assumptions:
+        - The mask image is a 2D binary mask, where True (or > 0) values represent the
+          foreground (to be masked out) and False values (or 0) represent the sky.
 
         Args:
             project: The name of the project to which this frame belongs.
@@ -301,15 +333,8 @@ class Mask(Frame):
                 values represent the sky.
         """
         if img_array is not None:
-            # Validate that the mask is a 2D binary mask:
-            if img_array.ndim != 2:
-                msg = "The mask array must be a 2D array."
-                raise ValueError(msg)
-            if not np.array_equal(img_array, img_array.astype(bool)):
-                msg = "The mask array must be a boolean array."
-                raise ValueError(msg)
             # Make it into a 8bit grayscale image, to conform with the Frame class:
-            img_array = img_array.astype(np.uint8) * 255
+            img_array = img_array.astype(bool).astype(np.uint8) * 255
 
         super().__init__(
             project=project,
@@ -450,12 +475,13 @@ class AverageLight(AverageFrame):
         The method will create a Plotly figure containing the clusters array, with
         different colors for each cluster.
 
+        Assumptions:
+        - The clusters array has already been initialized by `cluster_pixels` method.
+
         Returns:
             A Plotly figure containing the clusters array.
         """
-        if self._clusters_array is None:
-            msg = "Clusters array is not initialized."
-            raise ValueError(msg)
+        self._clusters_array = cast("np.ndarray", self._clusters_array)  # assumed set
         return utils.plot_image(self._clusters_array, interactive=True)
 
     def initialize_mask(self, foreground_cluster_labels: list[int]) -> None:
@@ -466,13 +492,14 @@ class AverageLight(AverageFrame):
 
         The initialized mask will be stored in the `mask_array` attribute.
 
+        Assumptions:
+        - The clusters array has already been initialized by `cluster_pixels` method.
+
         Args:
             foreground_cluster_labels: A list of cluster labels that should be
                 considered as foreground.
         """
-        if self._clusters_array is None:
-            msg = "Clusters array is not initialized."
-            raise ValueError(msg)
+        self._clusters_array = cast("np.ndarray", self._clusters_array)  # assumed set
         self._mask_array = np.isin(self._clusters_array, foreground_cluster_labels)
 
     def set_mask_in_box(
@@ -489,6 +516,9 @@ class AverageLight(AverageFrame):
         The method will set the pixels in the specified rectangular area to True in the
         mask array.
 
+        Assumptions:
+        - The mask array has already been initialized by `initialize_mask` method.
+
         Args:
             value: The value to set the mask to. If True, the pixels will be masked
                 (foreground), if False, they will be unmasked (sky).
@@ -497,9 +527,7 @@ class AverageLight(AverageFrame):
             y1: The top Y coordinate of the box. Optional.
             y2: The bottom Y coordinate of the box. Optional.
         """
-        if self._mask_array is None:
-            msg = "Mask array is not initialized."
-            raise ValueError(msg)
+        self._mask_array = cast("np.ndarray", self._mask_array)  # assumed set
         self._mask_array[slice(y1, y2), slice(x1, x2)] = value
 
     def create_mask(self, name: str = "Mask") -> Mask:
@@ -507,6 +535,9 @@ class AverageLight(AverageFrame):
 
         The method will create a new Mask object from the mask array and save it to the
         project folder.
+
+        Assumptions:
+        - The mask array has already been initialized by `initialize_mask` method.
 
         Args:
             name: The name of the mask frame. This is how the mask is referenced within
@@ -516,11 +547,4 @@ class AverageLight(AverageFrame):
             A Mask object representing the mask frame. The mask is also saved in the
             project
         """
-        if self._mask_array is None:
-            msg = "Mask array is not initialized."
-            raise ValueError(msg)
-        return Mask(
-            project=self.project,
-            name=name,
-            img_array=self._mask_array,
-        )
+        return Mask(project=self.project, name=name, img_array=self._mask_array)

@@ -1,12 +1,15 @@
-"""A module defining the Frame class.
+"""A module defining the base Frame classes.
 
 The Frame class is a base class for all the concrete Frames in the Celestack project,
 such as the `LightFrame`, `DarkFrame`, etc.
+
+The AverageFrame class is a base class for the frames that are created by
+averaging multiple frames together, such as the `MasterDark` and `AverageLight`.
 """
 
 from os import PathLike
 from pathlib import Path
-from typing import ClassVar, Literal, Self
+from typing import ClassVar, Literal, Self, cast
 
 import numpy as np
 import yaml
@@ -56,6 +59,7 @@ class Frame:
         self,
         project: str,
         name: str,
+        *,
         img_path: str | PathLike | None = None,
         img_array: np.ndarray | None = None,
     ) -> None:
@@ -79,6 +83,11 @@ class Frame:
         The class will work both with RGB images (light frames, dark frames, etc) and
         with grayscale images (used for instantiating the Mask class).
 
+        Assumptions:
+        - Exactly one of `img_path` or `img_array` must be provided.
+        - The frame has not yet been initialized in the project folder (if it has,
+          it should be loaded using the `from_state` class method).
+
         Args:
             project: The name of the project to which this frame belongs.
             name: The name of the frame. This is assigned by the project and usually
@@ -89,22 +98,9 @@ class Frame:
                 required if the `img_path` is not passed. If this is passed, the image
                 will be saved to the project folder.
         """
-        # Arguments validation:
-        if img_path is not None and img_array is not None:
-            msg = "Only one of img_path or img_array must be provided."
-            raise ValueError(msg)
-
-        # Validate that the frame has not yet been initialized:
-        if discovery.get_frame_state_path(project, name).exists():
-            msg = f"Frame '{name}' already exists in project '{project}'."
-            raise FileExistsError(
-                msg,
-            )
-
         # Read the full-quality image into array, if passed via path:
         if img_array is None:
-            if img_path is None:
-                raise ValueError  # just to make the type checker happy
+            img_path = cast("PathLike | str", img_path)  # assumed passed
             img_array = utils.read_image(img_path)
 
         # The basic attributes:
@@ -211,6 +207,10 @@ class Frame:
     def from_state(cls, project: str, name: str) -> Self:
         """Initialize the Frame from its state file.
 
+        Assumptions:
+        - The frame has already been initialized in the project folder, meaning it has
+          a state file and the image copies in the project folder.
+
         Args:
             project: The name of the project to which this frame belongs.
             name: The name of the frame. This is assigned by the project and usually
@@ -271,6 +271,11 @@ class AverageFrame(Frame):
         The constructor will create a new frame by averaging the passed frames together
         and saving the result to the project folder.
 
+        Assumptions:
+        - The frame has not yet been initialized in the project folder, meaning it has
+          no state file and no image copies in the project folder.
+        - The `frames` list is not empty.
+
         Args:
             project: The name of the project to which this frame belongs.
             name: The name of the frame. This is assigned by the project and usually
@@ -279,13 +284,6 @@ class AverageFrame(Frame):
             avg_func: The function to use for averaging. Can be either "mean" or
                 "median". Defaults to "median".
         """
-        # Validate that the frame has not yet been initialized:
-        if discovery.get_frame_state_path(project, name).exists():
-            msg = f"Frame '{name}' already exists in project '{project}'."
-            raise FileExistsError(
-                msg,
-            )
-
         # Store some attributes specific to the AverageFrame:
         self.frames = [frame.name for frame in frames]
         self.avg_func = avg_func
@@ -305,6 +303,9 @@ class AverageFrame(Frame):
         I need to average together potentially large number of potentially very large
         images, so this cannot be done by loading all of them into memory at once.
 
+        Assumptions:
+        - The `frames` list is not empty.
+
         Args:
             frames: A list of frames, whose arrays are to be stacked together and
                 averaged.
@@ -314,11 +315,6 @@ class AverageFrame(Frame):
             A NumPy array representing the averaged image, with the same shape and
             data type as any of the original images.
         """
-        # Basic arguments validation:
-        if not frames:
-            msg = "The list of frames cannot be empty."
-            raise ValueError(msg)
-
         shape = frames[0].shape
         bit_depth = frames[0].bit_depth
         dtype = frames[0].dtype

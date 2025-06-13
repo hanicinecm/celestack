@@ -4,11 +4,12 @@ Each stack is referenced only by the project name, as only a single stack is all
 per project.
 """
 
+import datetime
 from functools import cached_property
 from pathlib import Path
+from typing import cast
 
 import numpy as np
-import pandas as pd
 import plotly.colors as pc
 import plotly.graph_objects as go
 import plotly.subplots as sp
@@ -19,6 +20,7 @@ import celestack._utils as utils
 from celestack import PROGRESS_BAR
 from celestack.frame import AverageLight, DarkFrame, Frame, LightFrame, Mask, MasterDark
 from celestack.segment import SegmentBox
+from celestack.stars_table import StarsTable
 
 
 class FrameStack:
@@ -31,19 +33,21 @@ class FrameStack:
         ultimately the star detection.
 
         The stars (once detected) are stored in the `stars_table` attribute as a
-        DataFrame.
+        StarsTable instance.
 
         This initializer only applies if the stack does not yet exist in the project.
         For an already existing stack, use the `from_state` class method instead.
 
+        Assumptions:
+        - The stack has not yet been initialized in the project.
+        - All the light frames and dark frames have the same pixel resolution and have
+          been taken with the same camera and lens, as part of one continuous sequence.
+        - The light frames have names which are in alphabetical order, so that that
+          the first frame name after sorting is the frame taken first in the sequence.
+
         Args:
             project: The name of the project.
         """
-        # Instantiation is only allowed if the stack does not yet exist in the project:
-        if discovery.get_stack_state_path(project).exists():
-            msg = f"Stack already exists in project '{project}'."
-            raise FileExistsError(msg)
-
         # Store the project name:
         self.project = project
 
@@ -58,13 +62,13 @@ class FrameStack:
 
         self.segment_boxes: list[SegmentBox] = []
 
+        self.stars_table: StarsTable | None = None
+
         self.star_finder_params: dict[str, float | None] = {
             "fwhm": None,  # optimum will be auto-detected.
             "max_roundness": 1.7,  # stars with higher |roundness| will be rejected.
             "min_separation": 1.5,  # minimum separation between stars in [fwhm].
         }
-
-        self.stars_table: pd.DataFrame | None = None  # TODO: switch to polars
 
         # Dump the initial state of the stack to the state file:
         self.dump_state()
@@ -78,11 +82,8 @@ class FrameStack:
         """The pixel width and height of the images in the stack."""
         if self.ref_frame is not None:
             frame = self.ref_frame
-        elif self.light_frames:
-            frame = next(iter(self.light_frames.values()))
         else:
-            msg = "Stack does not contain any frames to determine its dimensions from."
-            raise ValueError(msg)
+            frame = next(iter(self.light_frames.values()))
         return frame.width, frame.height
 
     @property
@@ -105,26 +106,15 @@ class FrameStack:
         The method will create the LightFrame and DarkFrame objects and store them in
         the project.
 
+        Assumptions:
+        - The stack does not yet contain any light frames or dark frames.
+        - All the frames have unique names - no two light frames or dark frames
+          have the same name.
+
         Args:
             lf_paths: A list of paths to the light frames.
             df_paths: A list of paths to the dark frames.
-
-        Raises:
-            ValueError: If the stack already contains some frames.
-            ValueError: If the light frame paths are not unique.
-            ValueError: If the dark frame paths are not unique.
         """
-        # Basic sanity checks:
-        if self.light_frames or self.dark_frames:
-            msg = "Stack contains some frames already."
-            raise ValueError(msg)
-        if len({pth.stem for pth in lf_paths}) != len(lf_paths):
-            msg = "Light frame names must be unique."
-            raise ValueError(msg)
-        if df_paths and len({pth.stem for pth in df_paths}) != len(df_paths):
-            msg = "Dark frame names must be unique."
-            raise ValueError(msg)
-
         # Load the light frames and the dark frames into the project:
         for lf_path in PROGRESS_BAR(lf_paths, "Loading light frames"):
             lf = LightFrame(project=self.project, name=lf_path.stem, img_path=lf_path)
@@ -145,23 +135,12 @@ class FrameStack:
     def apply_dark_frames_correction(self) -> None:
         """Create the master-dark frame and subtract it from the stack's light frames.
 
-        Raises:
-            ValueError: If the stack does not contain any dark frames.
-            ValueError: If the stack contains the master-dark frame already.
-            ValueError: If the stack contains the average-light frame already (which is
-                supposed to be created from dark-frame-corrected light frames).
+        Assumptions:
+        - The stack contains at least one dark frame.
+        - The dark frame correction has not yet been applied.
+        - The dark frame correction is assumed to be the first processing step, so no
+          subsequent processing steps must have been applied yet.
         """
-        # Basic sanity checks:
-        if not self.dark_frames:
-            msg = "Stack does not contain any dark frames."
-            raise ValueError(msg)
-        if self.master_dark:
-            msg = "Stack already contains the master-dark frame."
-            raise ValueError(msg)
-        if self.avg_light:
-            msg = "Stack already contains the average-light frame."
-            raise ValueError(msg)
-
         # Create the master-dark frame and save it into the project:
         self.master_dark = MasterDark(
             project=self.project,
@@ -178,18 +157,10 @@ class FrameStack:
     def create_average_light_frame(self) -> None:
         """Create the average-light frame from the light frames in the stack.
 
-        Raises:
-            ValueError: If the stack does not contain any light frames.
-            ValueError: If the stack contains the average-light frame already.
+        Assumptions:
+        - The stack contains at least one light frame.
+        - The average-light frame has not yet been created.
         """
-        # Basic sanity checks:
-        if not self.light_frames:
-            msg = "Stack does not contain any light frames."
-            raise ValueError(msg)
-        if self.avg_light:
-            msg = "Stack already contains the average-light frame."
-            raise ValueError(msg)
-
         # Create the average-light frame and save it into the project:
         self.avg_light = AverageLight(
             project=self.project,
@@ -207,26 +178,14 @@ class FrameStack:
         The mask name will be saved in the stack state file and the mask will also be
         assigned to every light frame in the stack.
 
+        Assumptions:
+        - The stack does not yet contain a mask.
+        - The mask which is being applied belongs to the same project as the stack.
+        - The mask has the same pixel dimensions as the light frames in the stack.
+
         Args:
             mask: The mask to add to the stack.
-
-        Raises:
-            ValueError: If the stack already contains a mask.
-            ValueError: If the mask does not belong to the same project.
         """
-        # Basic sanity checks:
-        if self.mask:
-            msg = "Stack already contains a mask."
-            raise ValueError(msg)
-        if mask.project != self.project:
-            msg = (
-                "Mask does not belong to the same project: "
-                f"{mask.project} != {self.project}"
-            )
-            raise ValueError(
-                msg,
-            )
-
         # Assign the mask to all the light frames in the stack:
         for lf in self.light_frames.values():
             lf.assign_mask(mask)
@@ -250,26 +209,20 @@ class FrameStack:
         meandering fashion, with the first segment being the top-left corner of the
         image.
 
+        Assumptions:
+        - No stars have yet been detected in the stack.
+
         Args:
             n_segments: The number of segments to create. Defaults to 50.
-
-        Raises:
-            ValueError: If the stack does not contain a mask.
-            ValueError: If any stars have already been detected in the stack.
         """
-        # Basic sanity checks:
-        if self.mask is None:
-            msg = "Stack does not contain a mask."
-            raise ValueError(msg)
-        if self.stars_table is not None:
-            msg = "Stars have already been detected in the stack."
-            raise ValueError(msg)
-
         segment_boxes: list[SegmentBox] = []
 
         # First, figure out how many pixels we have in the sky:
-        ma = self.mask.mask_array  # This is a boolean array with False for sky pixels
-        h, _ = self.mask.shape
+        if self.mask is not None:
+            ma = self.mask.mask_array  # Mask array, with False for sky
+        else:
+            ma = np.zeros((self.height, self.width), dtype=bool)
+        h, _ = ma.shape
 
         # Lets define the xmin, xmax of the bounding box of the sky:
         xmin, xmax = np.where(np.sum(ma, axis=0) < h)[0][[0, -1]]
@@ -338,23 +291,13 @@ class FrameStack:
 
         It is also used for the initial stars detection after the sky is segmented.
 
+        Assumptions:
+        - The reference frame must be one of the light frames in the stack.
+        - No stars have yet been detected in the stack.
+
         Args:
             ref_frame_name: The name of the reference frame. Must exist in the stack.
-
-        Raises:
-            ValueError: If the reference frame passed is not in the stack.
-            ValueError: If any stars have already been detected.
         """
-        # Basic sanity checks:
-        if ref_frame_name not in self.light_frames:
-            msg = f"Reference frame '{ref_frame_name}' does not belong to the stack."
-            raise ValueError(
-                msg,
-            )
-        if self.stars_table is not None:
-            msg = "Stars have already been detected in the stack."
-            raise ValueError(msg)
-
         # Set the reference frame and save it into the project:
         self.ref_frame = self.light_frames[ref_frame_name]
         self.dump_state()
@@ -364,52 +307,39 @@ class FrameStack:
             del self.t_series
 
     @cached_property
-    def t_series(self) -> pd.Series:
+    def t_series(self) -> np.ndarray:
         """Get the time coordinates of all the frames in the stack.
 
         Get the time-like distance of each frame from the reference frame.
         If the frames have exif data with the timestamp, we'll use that and the `t` will
         be in seconds.
 
-        Note, that the
+        The reference frame will have `t` equal to 0, and the other frames will have
+        `t` equal to the time difference from the reference frame, with frames taken
+        before the reference frame having negative `t` values.
+
+        The order of the returned array is the same as the order of the frames in the
+        stack.
+
+        Assumptions:
+        - The reference frame has already been set.
+        - The light frames in the stack have exif data with the timestamp.
 
         Returns:
             The series of time of capture for each frame, relative to the reference
             frame. The t is in [seconds] and the t of the reference frame is 0.
-            The output is a pandas Series with the frame names as index, times as values
-            and the name "t".
+            The output is a numpy array with the same length and order as the light
+            frames in the stack.
 
         Raises:
-            ValueError: If the reference frame has not yet been set.
-            NotImplementedError: If the frames do not have exif data with the
-                timestamp.
+            NotImplementedError: If the frames do not have exif data with the timestamp.
         """
-        # Basic sanity checks:
-        if self.ref_frame is None:
-            msg = "Reference frame has not yet been set."
-            raise ValueError(msg)
+        self.ref_frame = cast("LightFrame", self.ref_frame)
 
-        # Get the timestamps from the light frames' exif data:
-        try:
-            timestamps: dict[str, str] = {
-                frame_name: frame.exif_data["DateTimeOriginal"]
-                for frame_name, frame in self.light_frames.items()
-            }
-        except KeyError as err:
-            msg = (
-                "The frames do not have exif data with the timestamp. "
-                "Please implement a way to get the time of capture for each frame."
-            )
-            raise NotImplementedError(msg) from err
+        abs_times = np.array([lf.time() for lf in self.light_frames.values()])
+        ref_time = self.ref_frame.time()
 
-        times = pd.Series(timestamps)
-        times = pd.to_datetime(times, format="%Y:%m:%d %H:%M:%S")
-
-        # Convert to seconds relative to the reference frame
-        times = (times - times[self.ref_frame.name]).dt.total_seconds()
-        times.name = "t"
-
-        return times
+        return abs_times - ref_time
 
     def _find_optimal_fwhm(self) -> float:
         """Find the optimal star FWHM for the star finder.
@@ -422,6 +352,10 @@ class FrameStack:
         star finder and it will be stored (persistently) in the stack's
         `star_finder_params` dictionary.
 
+        Assumptions:
+        - The sky has already been segmented into segment boxes.
+        - The reference frame has already been set.
+
         Returns:
             The optimal FWHM for the star finder.
 
@@ -429,12 +363,10 @@ class FrameStack:
             ValueError: If the stack's sky has not yet been segmented.
             ValueError: If the stack's reference frame has not yet been set.
         """
-        if not self.segment_boxes:
-            msg = "Sky has not yet been segmented."
-            raise ValueError(msg)
-        if self.ref_frame is None:
-            msg = "Reference frame has not yet been set."
-            raise ValueError(msg)
+        self.ref_frame = cast("LightFrame", self.ref_frame)  # assumed set
+
+        # This is where I got to with my refactoring... To be continued...
+        raise NotImplementedError
 
         # Choose 5 segment boxes in representative locations:
         w, h = self.ref_frame.width, self.ref_frame.height
@@ -723,7 +655,9 @@ class FrameStack:
                     continue
 
                 # Rough position prediction:
-                use_n_closest = 15
+                # TODO: The size of the model should be returned by the model.
+                # TODO: The model should also return the heuristic guess accuracy.
+                use_n_closest = 5
                 guess_model_size = min(star_trail.x.dropna().count(), use_n_closest)
                 x_guess, y_guess = utils.predict_star_position_in_frame(
                     star_trail[["t", "x", "y"]], frame_name, n_closest=use_n_closest
@@ -834,6 +768,13 @@ class FrameStack:
         The method will iterate over all the stars found in the reference frame and
         propagate each of them to all other frames in the stack.
         The star trails will be stored in the `stars_table` DataFrame.
+
+        The stars which could not be matched in certain frames will still contain
+        their row in the stars table, just with the x, y (and other) columns set
+        to NaN.
+        In contrast to this, the stars which would would have been positioned outside
+        the sky pixels (outside the image bounds, or in the foreground) will *not* be
+        added to the stars table.
 
         Raises:
             ValueError: If the stars have not yet been detected in the reference frame.
@@ -1114,7 +1055,7 @@ class FrameStack:
             fig.update_layout(showlegend=True)
             segments_array = np.vstack(
                 [
-                    np.vstack([seg.to_array(), np.array([np.nan, np.nan])])
+                    np.vstack([seg.to_polygon(), np.array([np.nan, np.nan])])
                     for seg in self.segment_boxes
                 ],
             )

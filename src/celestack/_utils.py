@@ -1,21 +1,98 @@
 import base64
-import functools
 import io
 import warnings
-from collections.abc import Callable
+from dataclasses import dataclass
 from os import PathLike
 from pathlib import Path
-from typing import cast
+from typing import Any
 
 import exifread
 import numpy as np
-import pandas as pd
 import tifffile
 from astropy.stats import mad_std
 from photutils.detection import DAOStarFinder
 from photutils.detection.daofinder import NoDetectionsWarning
 from PIL import Image
 from plotly import graph_objects as go
+
+
+@dataclass
+class StarsList:
+    """A class to hold a list of stars with their coordinates and other essential data.
+
+    This class is used to store the results of the star detection algorithm.
+
+    All the arrays are of the same length, which is the number of detected stars.
+
+    The `x` and `y` coordinates are in pixels always relative to the top-left
+    corner of either the image, or the segment of the image, in which the stars
+    were detected, depending on the context of the detection.
+
+    The `flux` is the total flux of the star in the image, which is the sum of the
+    pixel values in the star's area. It is an integer value, which can be used to
+    determine the brightness of the star.
+
+    The `threshold` is the threshold used for the star detection, in units of
+    standard deviations of the background noise. It is a float value, and it's the
+    parameter to the star detection algorithm, so it's normally the same for all
+    the stars in the list.
+
+    The `fwhm` is the full width at half maximum (FWHM) of the stars, in pixels.
+    It is a float value, and it is the parameter to the star detection algorithm,
+    so it's normally the same for all the stars in the list.
+    """
+
+    x: np.ndarray
+    y: np.ndarray
+    flux: np.ndarray
+    threshold: np.ndarray
+    fwhm: np.ndarray
+
+    def __len__(self) -> int:
+        """Return the number of stars in the list."""
+        return len(self.x)
+
+    def __bool__(self) -> bool:
+        """Return True if the list is not empty."""
+        return len(self) > 0
+
+    def __repr__(self) -> str:
+        return f"StarsList(len={len(self)})"
+
+    @classmethod
+    def empty(cls) -> "StarsList":
+        """Return an empty StarsList."""
+        _n = np.array([], dtype=float)
+        return cls(x=_n, y=_n, flux=_n, threshold=_n, fwhm=_n)
+
+    def sort(self) -> None:
+        """Sort the stars list in-place, by their flux, brightest first."""
+        indices = np.argsort(self.flux)[::-1]
+        self.x = self.x[indices]
+        self.y = self.y[indices]
+        self.flux = self.flux[indices]
+        self.threshold = self.threshold[indices]
+        self.fwhm = self.fwhm[indices]
+
+    def cap(self, max_stars: int) -> None:
+        """Cap the number of stars in the list to `max_stars`.
+
+        This is useful to limit the number of stars to a manageable number,
+        for example, when displaying them in a plot.
+
+        The number of stars will be capped to `max_stars`, whatever the current stars
+        order is. It might make sense to call `sort()` before this method to ensure
+        that only the brightest stars are kept in the list.
+
+        Args:
+            max_stars: The maximum number of stars to keep in the list.
+        """
+        if len(self) > max_stars:
+            self.x = self.x[:max_stars]
+            self.y = self.y[:max_stars]
+            self.flux = self.flux[:max_stars]
+            self.threshold = self.threshold[:max_stars]
+            self.fwhm = self.fwhm[:max_stars]
 
 
 def read_image(img_path: str | PathLike) -> np.ndarray:
@@ -144,8 +221,8 @@ def compress_to_grayscale(img_array: np.ndarray) -> np.ndarray:
 
 def plot_image(
     array: np.ndarray,
-    size: tuple[int, int] = (1200, 900),
     *,
+    size: tuple[int, int] | None = None,
     interactive: bool = False,
 ) -> go.Figure:
     """Plot an image as a Plotly figure.
@@ -154,25 +231,20 @@ def plot_image(
     and the image can be displayed either as a static image or as an interactive
     map where each pixel can be hovered over to see its coordinates and value (slower).
 
+    Assumptions:
+    - The input array is a 2D grayscale image (single channel).
+
     Args:
-        array: The image array to display.
-        size: The size of the figure in pixels, as a tuple (width, height).
+        array: The image array to display. Must be a 2D array (grayscale image).
+        size: The size of the figure in pixels, as a tuple (width, height). Optional,
+            if not passed, the size will be left up to plotly.
         interactive: If True, the image will be displayed in an interactive Plotly
             figure, where each pixel can be hovered over to see its coordinates and
             value. Optional, defaults to False.
 
     Returns:
         A Plotly figure object containing the image.
-
-    TODO: Make the size parameter optional - this will require redefining the layout
-        of the figure.
     """
-    if array.ndim != 2:
-        msg = "Only 2D arrays (grayscale images) are supported for plotting."
-        raise NotImplementedError(
-            msg,
-        )
-
     # Get the image dimensions
     img_height, img_width = array.shape
 
@@ -207,6 +279,7 @@ def plot_image(
         )
 
     # Create a Plotly figure with the image in the background
+    size_kwargs: dict[str, Any] = {"width": size[0], "height": size[1]} if size else {}
     fig.update_layout(
         xaxis={
             "range": [0, img_width],
@@ -221,11 +294,10 @@ def plot_image(
             "zeroline": False,
             "scaleanchor": "x",
         },
-        width=size[0],
-        height=size[1],
         paper_bgcolor="rgba(255,255,255,0)",
         plot_bgcolor="rgba(255,255,255,0)",
         margin={"l": 0, "r": 0, "t": 30, "b": 0},
+        **size_kwargs,
     )
 
     return fig
@@ -241,19 +313,20 @@ def find_stars(
     mask: np.ndarray | None = None,
     exclude_border: bool = True,
     show: bool = False,
-) -> pd.DataFrame:
+) -> StarsList:
     """Find stars in an image array using the DAOStarFinder algorithm.
 
     This function uses the `photutils` library to detect stars in an array.
     It calculates the background noise using the median absolute deviation (MAD) and
-    uses the DAOStarFinder algorithm to find sources in the image. The function
-    returns a pandas DataFrame containing the detected stars.
+    uses the DAOStarFinder algorithm to find sources in the image.
 
-    TODO: Change the table to a polars DataFrame.
+    The detected stars are returned packaged in the `StarsList` dataclass, which
+    contains the x and y pixel coordinates of the stars (relative to the array),
+    as well as their fluxes.
 
     The stars with |roundness| > `max_roundness` are filtered out.
     Also, the stars close to the image border are filtered out, as are the stars within
-    1.5 * fwhm of other stars.
+    (by default) 1.5 * fwhm of other stars.
 
     Args:
         array: The image array in which to find stars.
@@ -273,9 +346,7 @@ def find_stars(
             Optional, defaults to False.
 
     Returns:
-        A pandas DataFrame containing the detected stars, as returned by the
-        DAOStarFinder algorithm, indexed by their IDs.
-        If no stars are found, an empty DataFrame is returned.
+        Stars detected in the image, packaged in a `StarsList` dataclass.
     """
     bkg_mad = mad_std(array)
 
@@ -293,18 +364,26 @@ def find_stars(
         sources = find(data=array, mask=mask)
 
     if sources is None:
-        return pd.DataFrame()
-    sources = sources.to_pandas().set_index("id", drop=True)
+        # No stars found, return an empty StarsList
+        return StarsList.empty()
+
+    stars_list = StarsList(
+        x=sources["xcentroid"].value,
+        y=sources["ycentroid"].value,
+        flux=sources["flux"].value,
+        threshold=np.full(len(sources), threshold),
+        fwhm=np.full(len(sources), fwhm),
+    )
 
     if show:
         fig = plot_image(array)
         fig.add_scatter(
-            x=sources["xcentroid"],
-            y=sources["ycentroid"],
+            x=stars_list.x,
+            y=stars_list.y,
             mode="markers",
             marker={
-                "size": sources["flux"] / np.max(sources["flux"]) * 10,
-                "color": sources["flux"],
+                "size": stars_list.flux / np.max(stars_list.flux) * 10,
+                "color": stars_list.flux,
                 "colorscale": "Viridis",
             },
             name="Stars",
@@ -317,121 +396,4 @@ def find_stars(
         )
         fig.show()
 
-    return sources
-
-
-@functools.lru_cache(maxsize=128)
-def _get_rough_prediction_model(
-    x: tuple[float, ...], y: tuple[float, ...], t: tuple[float, ...]
-) -> Callable[[float], tuple[float, float]]:
-    """Get a model for rough prediction (x, y) based on time t.
-
-    The function takes three tuples: x, y, and t, which represent the
-    x-coordinates, y-coordinates, and time values of the known star positions.
-    It returns a callable that takes an arbitrary time value and returns the
-    predicted (x, y) coordinates of the star at that time.
-
-    Args:
-        x: A tuple of x-coordinates of the known star positions.
-        y: A tuple of y-coordinates of the known star positions.
-        t: A tuple of time values corresponding to the known star positions.
-
-    Returns:
-        A callable that takes a time value and returns the predicted (x, y)
-        coordinates of the star at that time.
-    """
-    if len(x) != len(y) or len(x) != len(t) or not len(x):
-        msg = "The lengths of x, y, and t must be the same and more than 0."
-        raise ValueError(msg)
-
-    if len(x) == 1:
-        # The nearest neighbor model:
-        return lambda t: (x[0], y[0])  # noqa: ARG005
-
-    if len(x) == 2:
-        # Trivial linear case:
-        a_x = (x[1] - x[0]) / (t[1] - t[0])
-        b_x = x[0] - a_x * t[0]
-        a_y = (y[1] - y[0]) / (t[1] - t[0])
-        b_y = y[0] - a_y * t[0]
-        return lambda t: (a_x * t + b_x, a_y * t + b_y)
-
-    # Fit a linear model to the points:
-    a_x, b_x = np.polyfit(t, x, 1)
-    a_y, b_y = np.polyfit(t, y, 1)
-
-    return lambda t: (a_x * t + b_x, a_y * t + b_y)
-
-
-def predict_star_position_in_frame(
-    star_coordinates: pd.DataFrame,
-    frame_name: str,
-    n_closest: int = 7,
-) -> tuple[float, float]:
-    """Predict the star position in a frame, based on already know positions in others.
-
-    The unknown position of a star in a frame with the name `frame_name` is predicted
-    based on the `star_coordinates` DataFrame, which contains the coordinates of the
-    star in other frames.
-    The DataFrame must have the columns "t", "x" and "y" and the index must be
-    the frame names. The "t" column contains the time of capture of the frame,
-    relative to the reference frame (in seconds or any other arbitrary time unit) and
-    it should be fully populated for all frames.
-    The "x" and "y" columns contain the pixel coordinates of the star in the respective
-    frame and it will be NaN for the frames where the star has not yet been detected.
-
-    If only the position is known only for a single frame (the reference frame),
-    then this position is used as the predicted position in the next frame.
-    This is only possible, if the frame in question is the closest neighbor of the
-    reference frame, otherwise the function returns tuple of NaNs.
-
-    If more than one position is known, then the N closest positions in star_coordinates
-    are fitted with a linear fit and the position is extrapolated to the frame in
-    question.
-
-    Args:
-        star_coordinates: The DataFrame with the star coordinates.
-            The DataFrame must have the columns "t", "x" and "y" and the index must be
-            the frame names.
-            The x, y are pixel coordinates of the star in the respective frame.
-            The t is the time of capture of the frame, relative to the reference frame
-            (in seconds or any other arbitrary time unit).
-        frame_name: The name of the frame to predict the position for.
-        n_closest: Only the N known closest stars to the frame in question are used for
-            the fit to extrapolate the position of the star in the frame in question.
-
-    Returns:
-        The predicted x and y coordinates of the star in the frame with the name
-        `frame_name`.
-        The coordinates are in pixels in that frame.
-        If the prediction failed, tuple of NaNs is returned.
-
-    TODO: Return also the maximal allowed error of the prediction.
-    """
-    # Mask out the frames where the star coordinates are not known:
-    known = star_coordinates.dropna(subset=["x", "y"])
-
-    # The nearest-neighbor model is only allowed for the nearest neighbor :)
-    if len(known) == 1:
-        # What is the loc index of the frame with the known coordinates?
-        known_name: str = known.index[0]
-        i_known = star_coordinates.index.get_loc(known_name)
-        i_known = cast("int", i_known)
-        # Is the `frame_name` the closest neighbor of the known frame?
-        i_frame = star_coordinates.index.get_loc(frame_name)
-        i_frame = cast("int", i_frame)
-        if abs(i_known - i_frame) > 1:
-            # It's not!
-            return np.nan, np.nan
-
-    t_frame: float = star_coordinates.t[frame_name]
-
-    # Select up to n_closest rows with t closest to t_frame
-    if len(known) > n_closest:
-        known = known.iloc[(known.t - t_frame).abs().argsort()[:n_closest]]
-
-    model = _get_rough_prediction_model(
-        x=tuple(known.x), y=tuple(known.y), t=tuple(known.t)
-    )
-
-    return model(t_frame)
+    return stars_list

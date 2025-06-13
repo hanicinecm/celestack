@@ -3,7 +3,6 @@
 from dataclasses import dataclass
 
 import numpy as np
-import pandas as pd
 import plotly.graph_objects as go
 
 import celestack._utils as utils
@@ -23,7 +22,7 @@ class SegmentBox:
     x2: int
     y2: int
 
-    def to_array(self) -> np.ndarray:
+    def to_polygon(self) -> np.ndarray:
         """Convert the box to a NumPy array representing its polygon.
 
         Returns:
@@ -64,7 +63,7 @@ class Segment:
 
         The array should be a 2D NumPy array in grayscale 8-bit format (uint8).
         The segments are normally instantiated only from the sections of the
-        `compressed_array` of the `Frame` objects.
+        `array_gs` (grayscale array) of the `Frame` objects.
 
         Args:
             box: The SegmentBox object defining the segment.
@@ -86,8 +85,8 @@ class Segment:
         max_roundness: float,
         min_separation: float,
         init_thresh: float = 4.0,
-    ) -> pd.DataFrame:
-        """Find stars in the segment and return them in a pandas DataFrame table.
+    ) -> utils.StarsList:
+        """Find stars in the segment and return them packaged in the StarsList.
 
         The stars are found using the DAOStarFinder algorithm from the photutils
         library, and the method intelligently adjusts the algorithm's threshold to find
@@ -102,10 +101,7 @@ class Segment:
 
         All stars that are too close to other stars or to to an edge, are rejected.
 
-        The stars table is saved with the stars sorted by their flux (brightest first)
-        and with unique IDs as index.
-
-        TODO: Return a polars DataFrame instead of pandas DataFrame.
+        The stars are ordered in the stars list by their flux (brightest first).
 
         Args:
             density: The final density of the found stars in the segment, in
@@ -126,14 +122,13 @@ class Segment:
                 Optional, if not passed, a sensible default is provided.
 
         Returns:
-            A pandas DataFrame containing the stars found in the segment.
-            The DataFrame contains the following columns:
-                - x: The x coordinate of the star in the original image (in pixels).
-                - y: The y coordinate of the star in the original image (in pixels).
-                - flux: The flux of the star.
-                - threshold: The threshold used for finding the stars (in units of
-                    standard deviations of the background noise).
-                - fwhm: The FWHM parameter used for the star finding algo (in pixels).
+            Stars detected in the segment, packaged in a StarsList object, ordered by
+            their flux, brightest first.
+            The positions of the stars are in the image coordinate system, i.e. the
+            (x, y) coordinates are relative to the top-left corner of the parent image,
+            rather than the segment box.
+
+        TODO: Optimize with a binary search for the threshold.
         """
         # Calculate the number of stars to find:
         n_pixels = self.array.size
@@ -144,13 +139,13 @@ class Segment:
         # Find the sources:
         # Start with the `init_thresh * bkg_mad` threshold and iterate the threshold
         # until we find close to required number of stars:
-        _sources = None
+        _sources = utils.StarsList.empty()
         delta_n = None
         thresh = init_thresh
         thresh_incr = 0.2
         target_n = 2 * n  # target number of stars (will be capped later)
         n_iters_stagnating = 0
-        # TODO: Optimize this with a binary search or something similar
+
         while True:
             # find the stars:
             new_sources = utils.find_stars(
@@ -181,28 +176,21 @@ class Segment:
             # adjust the threshold for the next iteration:
             thresh += thresh_incr if new_delta_n > 0 else -thresh_incr
 
-        # If after all this we have no sources, return an empty DataFrame:
-        if _sources is None or not len(_sources):
-            return pd.DataFrame(columns=["x", "y", "flux", "fwhm", "threshold"])
+        stars_list = _sources
 
-        # Sort by flux:
-        sources = _sources.sort_values(by="flux", ascending=False)
+        # If after all this we have no stars, just return the empty StarsList:
+        if not stars_list:
+            return stars_list
 
-        # Cap the number of stars to `n`:
-        if len(sources) > n:
-            # The sources are already sorted by flux
-            sources = sources.iloc[:n]
+        # Sort by flux and cap the number of stars to `n`:
+        stars_list.sort()
+        stars_list.cap(n)
 
-        # Turn this into a final table (x, y, x_seg, y_seg, flux, fwhm, threshold)
-        stars_table: pd.DataFrame = sources[["xcentroid", "ycentroid", "flux"]].copy()
-        stars_table["x"] = stars_table["xcentroid"] + self.box.x1
-        stars_table["y"] = stars_table["ycentroid"] + self.box.y1
-        stars_table["fwhm"] = fwhm
-        stars_table["threshold"] = thresh
+        # Absolutize the positions to the image coordinate system and return:
+        stars_list.x += self.box.x1
+        stars_list.y += self.box.y1
 
-        return stars_table[["x", "y", "flux", "threshold", "fwhm"]].reset_index(
-            drop=True,
-        )
+        return stars_list
 
     def plot(self) -> go.Figure:
         """Plot the segment.
