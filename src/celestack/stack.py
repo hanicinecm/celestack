@@ -15,7 +15,7 @@ import yaml
 import celestack._discovery as discovery
 import celestack._utils as utils
 from celestack import PROGRESS_BAR
-from celestack.frame import AverageLight, DarkFrame, Frame, LightFrame, Mask, MasterDark
+from celestack.frame import AverageLight, DarkFrame, LightFrame, Mask, MasterDark
 from celestack.segment import SegmentBox
 from celestack.stars_table import StarsTable
 
@@ -356,7 +356,7 @@ class FrameStack:
         # Choose 5 segment boxes in representative locations:
         chosen_boxes: list[SegmentBox] = []
         w, h = ref_frame.width, ref_frame.height
-        for x, y in [(0, 0), (0, w), (h, 0), (h, w), (h / 2, w / 2)]:
+        for y, x in [(0, 0), (0, w), (h, 0), (h, w), (h / 2, w / 2)]:
             closest_box = min(
                 self.segment_boxes,
                 key=lambda b: (b.x - x) ** 2 + (b.y - y) ** 2,
@@ -441,14 +441,17 @@ class FrameStack:
               frame).
             - The sky has already been segmented.
             - The reference frame has already been set.
-            - The `star_finder_params` dictionary contains the `fwhm`, `max_roundness`
-                and `min_separation` parameters, which are used for the star finding
-                algorithm.
+            - The `max_roundness` and `min_separation` parameters are set in the
+              star finder parameters.
         """
         frame = cast("LightFrame", self.ref_frame)  # assumed set
 
-        # Retrieve the star finder parameters from the instance:
-        fwhm = cast("float", self.star_finder_params["fwhm"])  # assumed set
+        # Find the optimal FWHM for the star finder, if not set yet:
+        fwhm = self.star_finder_params["fwhm"]
+        if fwhm is None:
+            fwhm = self._find_optimal_fwhm()
+
+        # Retrieve the other star finder parameters from the instance:
         max_roundness = cast("float", self.star_finder_params["max_roundness"])  # set
         min_separation = cast("float", self.star_finder_params["min_separation"])  # set
 
@@ -583,7 +586,7 @@ class FrameStack:
             if frame is not None:
                 frame.clear_cache()
 
-    def plot(self, frame: Frame | None = None) -> go.Figure:
+    def plot(self, frame: LightFrame | None = None) -> go.Figure:
         """Make the stack plot and return it as a Plotly figure.
 
         Optionally, the underlying frame can be selected by passing any frame object
@@ -611,19 +614,16 @@ class FrameStack:
         """
         # Start with auto-selecting the frame to plot, if not passed:
         if frame is None:
-            for f in [self.ref_frame, self.avg_light, self.mask]:
-                if f is not None:
-                    frame = f
-                    break
+            if self.ref_frame is not None:
+                frame = self.ref_frame
             else:
                 frame = self.light_frames[sorted(self.light_frames)[0]]
-        frame = cast("Frame", frame)  # for the type checker
 
         # Plot the selected frame:
         fig = frame.plot()
 
         if self.stars_table is not None:
-            self.stars_table.plot_to_figure(fig)
+            self.stars_table.plot_to_figure(fig, stars_frame=frame.name)
 
         # Plot the segment boxes:
         if self.segment_boxes:
