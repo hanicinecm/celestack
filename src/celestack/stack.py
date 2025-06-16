@@ -641,7 +641,7 @@ class FrameStack:
                     mode="lines",
                     line={"width": 1, "color": "red"},
                     name="Segment Boxes",
-                    visible="legendonly" if self.stars_table is not None else "legend",
+                    visible=True if self.stars_table is None else "legendonly",
                 ),
             )
 
