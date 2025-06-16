@@ -48,6 +48,18 @@ class StarsList:
     threshold: np.ndarray
     fwhm: np.ndarray
 
+    def __post_init__(self) -> None:
+        """Ensure that all arrays are of the same length."""
+        if not (
+            len(self.x)
+            == len(self.y)
+            == len(self.flux)
+            == len(self.threshold)
+            == len(self.fwhm)
+        ):
+            msg = "All arrays in StarsList must have the same length."
+            raise ValueError(msg)
+
     def __len__(self) -> int:
         """Return the number of stars in the list."""
         return len(self.x)
@@ -62,8 +74,13 @@ class StarsList:
     @classmethod
     def empty(cls) -> "StarsList":
         """Return an empty StarsList."""
-        _n = np.array([], dtype=float)
-        return cls(x=_n, y=_n, flux=_n, threshold=_n, fwhm=_n)
+        return cls(
+            x=np.array([], dtype=float),
+            y=np.array([], dtype=float),
+            flux=np.array([], dtype=float),
+            threshold=np.array([], dtype=float),
+            fwhm=np.array([], dtype=float),
+        )
 
     def sort(self) -> None:
         """Sort the stars list in-place, by their flux, brightest first."""
@@ -93,6 +110,18 @@ class StarsList:
             self.flux = self.flux[:max_stars]
             self.threshold = self.threshold[:max_stars]
             self.fwhm = self.fwhm[:max_stars]
+
+    def extend(self, other: "StarsList") -> None:
+        """Extend the current stars list with another StarsList.
+
+        Args:
+            other: The StarsList to extend the current list with.
+        """
+        self.x = np.concatenate((self.x, other.x))
+        self.y = np.concatenate((self.y, other.y))
+        self.flux = np.concatenate((self.flux, other.flux))
+        self.threshold = np.concatenate((self.threshold, other.threshold))
+        self.fwhm = np.concatenate((self.fwhm, other.fwhm))
 
 
 def read_image(img_path: str | PathLike) -> np.ndarray:

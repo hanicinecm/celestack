@@ -22,6 +22,16 @@ class SegmentBox:
     x2: int
     y2: int
 
+    @property
+    def x(self) -> int:
+        """Get the x-coordinate of box center."""
+        return (self.x1 + self.x2) // 2
+
+    @property
+    def y(self) -> int:
+        """Get the y-coordinate of box center."""
+        return (self.y1 + self.y2) // 2
+
     def to_polygon(self) -> np.ndarray:
         """Convert the box to a NumPy array representing its polygon.
 
