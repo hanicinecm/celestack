@@ -2,23 +2,169 @@
 
 import functools
 from collections.abc import Callable
-from os import PathLike
+from pathlib import Path
+from types import MappingProxyType
 from typing import cast
 
 import numpy as np
-import pandas as pd
+import plotly.graph_objects as go
+import polars as pl
+
+from celestack._utils import StarsList
 
 
 class StarsTable:
     """A class representing a table of stars registered and aligned across frames."""
 
+    SCHEMA = MappingProxyType(
+        {
+            "frame": pl.Categorical,
+            "id": pl.Int64,
+            "t": pl.Float64,
+            "x": pl.Float64,
+            "y": pl.Float64,
+            "flux": pl.Float64,
+            "threshold": pl.Float64,
+            "fwhm": pl.Float64,
+        }
+    )
+
+    def __init__(
+        self,
+        frames_names: list[str],
+        frames_times: list[float],
+        ref_frame_name: str,
+        ref_stars_list: StarsList,
+    ) -> None:
+        """Initialize the stars table object.
+
+        The stars table is a data frame with each row representing a single star within
+        a single frame.
+        Various columns exist, populated with data useful not only for the stars
+        registration and trasformation calculations, but also for various diagnostics
+        and visualizations.
+
+        The initialization method will seed the stars table with empty rows for all
+        the frames in the stack, apart from the reference frame, which will have the
+        stars from the `ref_stars_list` provided.
+
+        Assumptions:
+        - The frames_names and frames_times lists are of the same length.
+        - The ref_frame_name is in the frames_names list.
+        - The time belonging to the ref_frame_name is 0.0.
+
+        Args:
+            frames_names: The names of the frames in the stack.
+            frames_times: The times of the frames in the stack, relative to the
+                reference frame.
+            ref_frame_name: The name of the reference frame (the frame for which the
+                stars list is provided).
+            ref_stars_list: The list of all the stars found in the reference frame.
+        """
+        # Seed the data with the frame names, ids and times:
+        n_frames = len(frames_names)
+        n_stars = len(ref_stars_list)
+        data = {
+            "frame": np.repeat(frames_names, n_stars),
+            "id": np.tile(ref_stars_list.ids, n_frames),
+            "t": np.repeat(frames_times, n_stars),
+        }
+
+        # Fill the rest of the columns with NaNs:
+        n_rows = n_frames * n_stars
+        nan_cols = [c for c in self.SCHEMA if c not in data]
+        for col in nan_cols:
+            data[col] = np.full(n_rows, np.nan)
+
+        # Seed the data frame with the empty records:
+        self._df = pl.DataFrame(data, schema=self.SCHEMA)
+
+        # Fill in the values for the reference frame from the provided stars list:
+        mask = pl.col("frame") == ref_frame_name
+        ref_vals = {
+            "x": ref_stars_list.x,
+            "y": ref_stars_list.y,
+            "flux": ref_stars_list.flux,
+            "threshold": ref_stars_list.threshold,
+            "fwhm": ref_stars_list.fwhm,
+        }
+        self._df = self._df.with_columns(
+            [
+                pl.when(mask).then(values).otherwise(pl.col(col)).alias(col)
+                for col, values in ref_vals.items()
+            ]
+        )
+
     @classmethod
-    def from_csv(cls, stars_table_path: PathLike) -> "StarsTable":
-        """Load the stars table from a CSV file."""
+    def from_state(cls, stars_table_path: str | Path) -> "StarsTable":
+        """Load the stars table from a CSV file.
+
+        Assumptions:
+        - The stars_df_path is an existing parquet file path.
+        """
+        # Create the instance of the class:
+        instance = cls.__new__(cls)
+
+        # Load the data frame from the parquet file:
+        _df = pl.read_parquet(stars_table_path, schema=instance.SCHEMA)
+        instance._df = _df  # noqa: SLF001
+
+        # Return the instance:
+        return instance
+
+    def dump_state(self, stars_table_path: str | Path) -> None:
+        """Save the stars table state to a file.
+
+        Assumptions:
+        - The stars_df_path is a parquet file path.
+        """
+        self._df.write_parquet(stars_table_path)
+
+    def plot_to_figure(self, fig: go.Figure, stars_frame: str) -> None:
+        """Plot the stars in the table into an existing figure.
+
+        Each star present in the table for the given frame name is plotted as a scatter
+        point, with its size and color determined by the star's brightness.
+
+        Additionally, the star trails are plotted for each star, as a line of the same
+        color as the star, connecting the star positions across all the frames.
+
+        The stars and the trails are plotted into an already existing figure - this
+        method will change the figure in place.
+
+        Assumptions:
+        - The stars_frame is a valid frame name, which exists in the stars table.
+        - The stars_frame already has some stars registered in it. Either the reference
+            frame is chosen, or the stars were already propagated across the frames.
+
+        Args:
+            fig: The figure to plot the stars into.
+            stars_frame: The name of the frame to plot the stars for.
+                The stars in the table for this frame will be plotted.
+        """
         raise NotImplementedError
 
-    def to_csv(self, stars_table_path: PathLike) -> None:
-        """Save the stars table to a CSV file."""
+    def plot_star_trail(self, star_id: int) -> go.Figure:
+        """Plot the trail of a star across all frames.
+
+        The method will create a new figure with the fragment of all the frames across
+        the stack, which contain the star with the given ID, stacked in the "lightest"
+        mode.
+        This way, the star data from all the frames are visible in the same figure.
+
+        Additionally, scatter points are plotted for the star positions registered
+        in each frame, with the size determining the star's brightness.
+
+        Assumptions:
+        - The star_id is a valid ID of a star in the stars table.
+
+        Args:
+            star_id: The ID of the star to plot the trail for. Must be a valid star ID
+                existing in the stars table.
+
+        Returns:
+            A Plotly figure with the star trail plotted.
+        """
         raise NotImplementedError
 
 

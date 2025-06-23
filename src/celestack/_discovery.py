@@ -97,4 +97,4 @@ def get_stars_table_path(project_name: str) -> Path:
     Returns:
         The path to the CSV file for the stars table.
     """
-    return get_project_dir(project_name) / "Stars.csv"
+    return get_project_dir(project_name) / "Stars.parquet"

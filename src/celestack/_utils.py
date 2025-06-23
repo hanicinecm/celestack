@@ -71,6 +71,11 @@ class StarsList:
     def __repr__(self) -> str:
         return f"StarsList(len={len(self)})"
 
+    @property
+    def ids(self) -> np.ndarray:
+        """Return an array of star IDs, which are just the indices of the stars."""
+        return np.arange(len(self.x), dtype=int)
+
     @classmethod
     def empty(cls) -> "StarsList":
         """Return an empty StarsList."""

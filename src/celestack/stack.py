@@ -518,10 +518,10 @@ class FrameStack:
         with state_path.open("w") as state_file:
             yaml.dump(state, state_file, default_flow_style=False)
 
-        # The stars table is stored as a CSV file, rather than in the state file:
+        # The stars table is stored in its separate state file:
         if self.stars_table is not None:
             stars_path = discovery.get_stars_table_path(self.project)
-            self.stars_table.to_csv(stars_path)
+            self.stars_table.dump_state(stars_path)
 
     @classmethod
     def from_state(cls, project: str) -> "FrameStack":
@@ -567,7 +567,7 @@ class FrameStack:
         # Load the stars table from the CSV file, if it exists:
         stars_path = discovery.get_stars_table_path(project)
         if stars_path.exists():
-            stack.stars_table = StarsTable.from_csv(stars_path)
+            stack.stars_table = StarsTable.from_state(stars_path)
 
         return stack
 
