@@ -490,7 +490,7 @@ class FrameStack:
         )
 
         self.dump_state()
-    
+
     def propagate_stars(self) -> None:
         """Propagate all the stars from the reference frame to the whole stack.
 
@@ -503,26 +503,16 @@ class FrameStack:
         - The stars table only contains the stars from the reference frame - not yet
             propagated to other frames.
         """
-        raise NotImplementedError  # TODO: implement the star propagation logic
-        # # Iterate over all the stars in the reference frame and propagate them:
-        # for star_id in PROGRESS_BAR(self.stars_table.id.unique(), "Propagating stars"):
-        #     # Propagate the star and get the star trail:
-        #     star_trail = self.propagate_a_star(star_id)
-        #     # Conform the table to the expected format in the stars table and drop the
-        #     # additional columns and the row for the reference frame (already in):
-        #     star_subtable = star_trail.drop(index=self.ref_frame.name)
-        #     star_subtable = star_subtable.loc[star_trail.in_sky, :].reset_index()
-        #     star_subtable["id"] = star_id
-        #     # Add the star trail to the stars table:
-        #     self.stars_table = pd.concat(
-        #         [self.stars_table, star_subtable[self.stars_table.columns]],
-        #         ignore_index=True,
-        #     )
-        #     self.dump_state()
+        stars_table = cast("StarsTable", self.stars_table)  # assumed set
 
-        # # After propagating all the stars, all the frames in the stack are cached, which
-        # # will take up a lot of memory - let's clear the cache:
-        # self.clear_cache()
+        # Iterate over all the stars in the stars table and propagate them across stack:
+        for star_id in PROGRESS_BAR(stars_table.ids, "Propagating stars"):
+            stars_table.propagate_a_star(star_id)
+            self.dump_state()  # Persist the state after each star is propagated
+
+        # After propagating all the stars, all the frames in the stack are cached, which
+        # will take up a lot of memory - let's clear the cache:
+        self.clear_cache()
 
     def dump_state(self) -> None:
         """Dump the current state of the stack to a YAML file.
