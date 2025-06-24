@@ -1,6 +1,7 @@
 """Stars table module."""
 
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar, cast
 
@@ -15,6 +16,7 @@ from celestack._utils import StarsList
 class StarsTable:
     """A class representing a table of stars registered and aligned across frames."""
 
+    # The schema for the underlying DataFrame:
     SCHEMA: ClassVar[dict] = {
         "frame": pl.Categorical,
         "id": pl.UInt16,
@@ -30,6 +32,12 @@ class StarsTable:
         "threshold": pl.Float32,
         "fwhm": pl.Float32,
     }
+
+    # Maximum number of closest stars in trail to use for the rough prediction model:
+    MODEL_MAX_SIZE = 7
+
+    # Maximum number of neighboring stars to use for the rough prediction model:
+    MODEL_MAX_NEIGHBORS = 25
 
     def __init__(
         self,
@@ -142,6 +150,104 @@ class StarsTable:
         - The stars_df_path is a parquet file path.
         """
         self._df.write_parquet(stars_table_path)
+
+    def _get_star_position_in_ref_frame(self, star_id: int) -> tuple[float, float]:
+        """Get the position of a star in the reference frame.
+
+        Assumptions:
+        - The star_id is a valid ID of a star in the stars table.
+        - The reference frame stars have been set in the table, with t=0.
+
+        Args:
+            star_id: The ID of the star to get the position for.
+
+        Returns:
+            A tuple (x, y) representing the position of the star in the reference frame.
+        """
+        x, y = (
+            self._get_star_df(star_id)
+            .filter(pl.col("t") == 0)
+            .select(["x", "y"])
+            .to_numpy()
+            .flatten()
+        )
+        return x, y
+
+    def _get_star_df(self, star_id: int) -> pl.DataFrame:
+        """Get the subset of the stars table for a given star ID.
+
+        Assumptions:
+        - The star_id is a valid ID of a star in the stars table.
+
+        Args:
+            star_id: The ID of the star to filter the DataFrame by.
+
+        Returns:
+            A DataFrame containing only the rows for the specified star ID.
+        """
+        return self.df.filter(pl.col("id") == star_id)
+
+    def _get_neighbors_df(self, star_id: int) -> pl.DataFrame:
+        """Get the subset of the stars table for the neighbors of a given star ID.
+
+        The method will filter the stars table to include only the N closest stars
+        to the star with the given `star_id`, where N is defined by the
+        `MODEL_MAX_NEIGHBORS` class variable.
+
+        Additionally, the returned dataframe only contains stars which have already
+        been propagated across frames, and only the rows with known stars positions.
+
+        Assumptions:
+        - The star_id is a valid ID of a star in the stars table.
+        - The reference frame stars have been set in the table, with t=0.
+
+        Args:
+            star_id: The ID of the star to find neighbors for.
+
+        Returns:
+            A DataFrame containing only the rows for a number of neighbors (excluding
+            the star itself) closest to the specified star ID, which have known
+            position (i.e. x and y coordinates are not NaN/Null).
+            If no stars have yet been propagated, an empty DataFrame is returned.
+        """
+        # Limit to stars with known positions:
+        df_known = self.df.filter(pl.col("x").is_not_nan(), pl.col("x").is_not_null())
+
+        # Limit to only the stars which have been propagated:
+        propagated_ids = (
+            df_known.filter(pl.col("model_size") >= 1)
+            .select("id")
+            .to_series()
+            .to_list()
+        )
+        df_propagated = df_known.filter(pl.col("id").is_in(propagated_ids))
+
+        # Limit to the reference frame only:
+        df_ref = df_propagated.filter(pl.col("t") == 0)
+
+        # Limit to only number of closest neighbors
+        x0, y0 = self._get_star_position_in_ref_frame(star_id)
+        neighbors_ids = (
+            df_ref.with_columns(
+                distance=((pl.col("x") - x0) ** 2 + (pl.col("y") - y0) ** 2) ** 0.5
+            )
+            .filter(pl.col("id") != star_id)
+            .sort("distance")
+            .select("id")
+            .head(self.MODEL_MAX_NEIGHBORS)
+            .to_series()
+            .to_list()
+        )
+
+        return df_propagated.filter(pl.col("id").is_in(neighbors_ids))
+
+    def rough_model(
+        self, star_id: int, frame_name: str, neighbors_df: pl.DataFrame | None = None
+    ) -> "ExpectedStarData":
+        """Get the rough model for a star in a given frame."""
+        star_df = self._get_star_df(star_id)
+        if neighbors_df is None:
+            neighbors_df = self._get_neighbors_df(star_id)
 
     def propagate_a_star(self, star_id: int, *, dry: bool = False) -> pl.DataFrame:
         """Propagate a single star from the reference frame to the whole stack.
@@ -624,117 +730,137 @@ class StarsTable:
         # return fig
 
 
-def _get_rough_prediction_model(
-    x: tuple[float, ...], y: tuple[float, ...], t: tuple[float, ...]
-) -> Callable[[float], tuple[float, float]]:
-    """Get a model for rough prediction (x, y) based on time t.
+@dataclass(frozen=True)
+class ExpectedStarData:
+    """A data class representing the output of the rough model for a star.
 
-    The function takes three tuples: x, y, and t, which represent the
-    x-coordinates, y-coordinates, and time values of the known star positions.
-    It returns a callable that takes an arbitrary time value and returns the
-    predicted (x, y) coordinates of the star at that time.
+    The rough model estimates the position of a star and its tolerance for a given frame
+    based on known positions of the same star in other frames, as well as
+    the positions of neighboring stars across the frames.
 
-    Args:
-        x: A tuple of x-coordinates of the known star positions.
-        y: A tuple of y-coordinates of the known star positions.
-        t: A tuple of time values corresponding to the known star positions.
-
-    Returns:
-        A callable that takes a time value and returns the predicted (x, y)
-        coordinates of the star at that time.
+    See the `StarsTable.rough_model` method for more details on how the rough model.
     """
-    if len(x) != len(y) or len(x) != len(t) or not len(x):
-        msg = "The lengths of x, y, and t must be the same and more than 0."
-        raise ValueError(msg)
 
-    if len(x) == 1:
-        # The nearest neighbor model:
-        return lambda t: (x[0], y[0])  # noqa: ARG005
-
-    if len(x) == 2:
-        # Trivial linear case:
-        a_x = (x[1] - x[0]) / (t[1] - t[0])
-        b_x = x[0] - a_x * t[0]
-        a_y = (y[1] - y[0]) / (t[1] - t[0])
-        b_y = y[0] - a_y * t[0]
-        return lambda t: (a_x * t + b_x, a_y * t + b_y)
-
-    # Fit a linear model to the points:
-    a_x, b_x = np.polyfit(t, x, 1)
-    a_y, b_y = np.polyfit(t, y, 1)
-
-    return lambda t: (a_x * t + b_x, a_y * t + b_y)
+    x: float
+    y: float
+    x_tol: float
+    y_tol: float
+    model_size: int
+    threshold: float
+    fwhm: float
 
 
-def predict_star_position_in_frame(
-    star_coordinates: pl.DataFrame,
-    frame_name: str,
-    n_closest: int = 7,
-) -> tuple[float, float]:
-    """Predict the star position in a frame, based on already know positions in others.
+# def _get_rough_prediction_model(
+#     x: tuple[float, ...], y: tuple[float, ...], t: tuple[float, ...]
+# ) -> Callable[[float], tuple[float, float]]:
+#     """Get a model for rough prediction (x, y) based on time t.
 
-    The unknown position of a star in a frame with the name `frame_name` is predicted
-    based on the `star_coordinates` DataFrame, which contains the coordinates of the
-    star in other frames.
-    The DataFrame must have the columns "t", "x" and "y" and the index must be
-    the frame names. The "t" column contains the time of capture of the frame,
-    relative to the reference frame (in seconds or any other arbitrary time unit) and
-    it should be fully populated for all frames.
-    The "x" and "y" columns contain the pixel coordinates of the star in the respective
-    frame and it will be NaN for the frames where the star has not yet been detected.
+#     The function takes three tuples: x, y, and t, which represent the
+#     x-coordinates, y-coordinates, and time values of the known star positions.
+#     It returns a callable that takes an arbitrary time value and returns the
+#     predicted (x, y) coordinates of the star at that time.
 
-    If only the position is known only for a single frame (the reference frame),
-    then this position is used as the predicted position in the next frame.
-    This is only possible, if the frame in question is the closest neighbor of the
-    reference frame, otherwise the function returns tuple of NaNs.
+#     Args:
+#         x: A tuple of x-coordinates of the known star positions.
+#         y: A tuple of y-coordinates of the known star positions.
+#         t: A tuple of time values corresponding to the known star positions.
 
-    If more than one position is known, then the N closest positions in star_coordinates
-    are fitted with a linear fit and the position is extrapolated to the frame in
-    question.
+#     Returns:
+#         A callable that takes a time value and returns the predicted (x, y)
+#         coordinates of the star at that time.
+#     """
+#     if len(x) != len(y) or len(x) != len(t) or not len(x):
+#         msg = "The lengths of x, y, and t must be the same and more than 0."
+#         raise ValueError(msg)
 
-    Args:
-        star_coordinates: The DataFrame with the star coordinates.
-            The DataFrame must have the columns "t", "x" and "y" and the index must be
-            the frame names.
-            The x, y are pixel coordinates of the star in the respective frame.
-            The t is the time of capture of the frame, relative to the reference frame
-            (in seconds or any other arbitrary time unit).
-        frame_name: The name of the frame to predict the position for.
-        n_closest: Only the N known closest stars to the frame in question are used for
-            the fit to extrapolate the position of the star in the frame in question.
+#     if len(x) == 1:
+#         # The nearest neighbor model:
+#         return lambda t: (x[0], y[0])
 
-    Returns:
-        The predicted x and y coordinates of the star in the frame with the name
-        `frame_name`.
-        The coordinates are in pixels in that frame.
-        If the prediction failed, tuple of NaNs is returned.
+#     if len(x) == 2:
+#         # Trivial linear case:
+#         a_x = (x[1] - x[0]) / (t[1] - t[0])
+#         b_x = x[0] - a_x * t[0]
+#         a_y = (y[1] - y[0]) / (t[1] - t[0])
+#         b_y = y[0] - a_y * t[0]
+#         return lambda t: (a_x * t + b_x, a_y * t + b_y)
 
-    TODO: Return also the maximal allowed error of the prediction.
-    """
-    # Mask out the frames where the star coordinates are not known:
-    known = star_coordinates.dropna(subset=["x", "y"])
+#     # Fit a linear model to the points:
+#     a_x, b_x = np.polyfit(t, x, 1)
+#     a_y, b_y = np.polyfit(t, y, 1)
 
-    # The nearest-neighbor model is only allowed for the nearest neighbor :)
-    if len(known) == 1:
-        # What is the loc index of the frame with the known coordinates?
-        known_name: str = known.index[0]
-        i_known = star_coordinates.index.get_loc(known_name)
-        i_known = cast("int", i_known)  # index assumed unique
-        # Is the `frame_name` the closest neighbor of the known frame?
-        i_frame = star_coordinates.index.get_loc(frame_name)
-        i_frame = cast("int", i_frame)  # index assumed unique
-        if abs(i_known - i_frame) > 1:
-            # It's not!
-            return np.nan, np.nan
+#     return lambda t: (a_x * t + b_x, a_y * t + b_y)
 
-    t_frame: float = star_coordinates.t[frame_name]
 
-    # Select up to n_closest rows with t closest to t_frame
-    if len(known) > n_closest:
-        known = known.iloc[(known.t - t_frame).abs().argsort()[:n_closest]]
+# def predict_star_position_in_frame(
+#     star_df: pl.DataFrame,
+#     neighbors_df: pl.DataFrame,
+#     frame_name: str,
+# ) -> tuple[float, float]:
+#     """Predict the star position in a frame, based on already know positions in others.
 
-    model = _get_rough_prediction_model(
-        x=tuple(known.x), y=tuple(known.y), t=tuple(known.t)
-    )
+#     The unknown position of a star in a frame with the name `frame_name` is predicted
+#     based on the `star_coordinates` DataFrame, which contains the coordinates of the
+#     star in other frames.
+#     The DataFrame must have the columns "t", "x" and "y" and the index must be
+#     the frame names. The "t" column contains the time of capture of the frame,
+#     relative to the reference frame (in seconds or any other arbitrary time unit) and
+#     it should be fully populated for all frames.
+#     The "x" and "y" columns contain the pixel coordinates of the star in the respective
+#     frame and it will be NaN for the frames where the star has not yet been detected.
 
-    return model(t_frame)
+#     If only the position is known only for a single frame (the reference frame),
+#     then this position is used as the predicted position in the next frame.
+#     This is only possible, if the frame in question is the closest neighbor of the
+#     reference frame, otherwise the function returns tuple of NaNs.
+
+#     If more than one position is known, then the N closest positions in star_coordinates
+#     are fitted with a linear fit and the position is extrapolated to the frame in
+#     question.
+
+#     Args:
+#         star_coordinates: The DataFrame with the star coordinates.
+#             The DataFrame must have the columns "t", "x" and "y" and the index must be
+#             the frame names.
+#             The x, y are pixel coordinates of the star in the respective frame.
+#             The t is the time of capture of the frame, relative to the reference frame
+#             (in seconds or any other arbitrary time unit).
+#         frame_name: The name of the frame to predict the position for.
+#         n_closest: Only the N known closest stars to the frame in question are used for
+#             the fit to extrapolate the position of the star in the frame in question.
+
+#     Returns:
+#         The predicted x and y coordinates of the star in the frame with the name
+#         `frame_name`.
+#         The coordinates are in pixels in that frame.
+#         If the prediction failed, tuple of NaNs is returned.
+
+#     TODO: Return also the maximal allowed error of the prediction.
+#     """
+#     # Mask out the frames where the star coordinates are not known:
+#     known = star_coordinates.dropna(subset=["x", "y"])
+
+#     # The nearest-neighbor model is only allowed for the nearest neighbor :)
+#     if len(known) == 1:
+#         # What is the loc index of the frame with the known coordinates?
+#         known_name: str = known.index[0]
+#         i_known = star_coordinates.index.get_loc(known_name)
+#         i_known = cast("int", i_known)  # index assumed unique
+#         # Is the `frame_name` the closest neighbor of the known frame?
+#         i_frame = star_coordinates.index.get_loc(frame_name)
+#         i_frame = cast("int", i_frame)  # index assumed unique
+#         if abs(i_known - i_frame) > 1:
+#             # It's not!
+#             return np.nan, np.nan
+
+#     t_frame: float = star_coordinates.t[frame_name]
+
+#     # Select up to n_closest rows with t closest to t_frame
+#     if len(known) > n_closest:
+#         known = known.iloc[(known.t - t_frame).abs().argsort()[:n_closest]]
+
+#     model = _get_rough_prediction_model(
+#         x=tuple(known.x), y=tuple(known.y), t=tuple(known.t)
+#     )
+
+#     return model(t_frame)
