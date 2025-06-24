@@ -1,6 +1,5 @@
 """Stars table module."""
 
-import functools
 from collections.abc import Callable
 from pathlib import Path
 from typing import ClassVar, cast
@@ -18,13 +17,18 @@ class StarsTable:
 
     SCHEMA: ClassVar[dict] = {
         "frame": pl.Categorical,
-        "id": pl.Int64,
-        "t": pl.Float64,
-        "x": pl.Float64,
-        "y": pl.Float64,
-        "flux": pl.Float64,
-        "threshold": pl.Float64,
-        "fwhm": pl.Float64,
+        "id": pl.UInt16,
+        "t": pl.Float32,
+        "model_x": pl.Float32,
+        "model_y": pl.Float32,
+        "model_x_tol": pl.Float32,
+        "model_y_tol": pl.Float32,
+        "model_size": pl.UInt8,
+        "x": pl.Float32,
+        "y": pl.Float32,
+        "flux": pl.UInt32,
+        "threshold": pl.Float32,
+        "fwhm": pl.Float32,
     }
 
     def __init__(
@@ -62,23 +66,43 @@ class StarsTable:
         # Seed the data with the frame names, ids and times:
         n_frames = len(frames_names)
         n_stars = len(ref_stars_list)
-        data = {
+        seed_data = {
             "frame": np.repeat(frames_names, n_stars),
             "id": np.tile(ref_stars_list.ids, n_frames),
             "t": np.repeat(frames_times, n_stars),
         }
+        _df = pl.DataFrame(seed_data)
 
-        # Fill the rest of the columns with NaNs everywhere except the reference frame:
-        n_rows = n_frames * n_stars
-        nan_cols = [c for c in self.SCHEMA if c not in data]
-        mask = data["frame"] == ref_frame_name
-        for col in nan_cols:
-            col_data = np.full(n_rows, np.nan)
+        # Seed all the other columns with NULLs:
+        _df = _df.with_columns(
+            [pl.lit(None).alias(col) for col in self.SCHEMA if col not in seed_data]
+        )
+
+        # Fill the stars values for the reference frame:
+        mask_expr = pl.col("frame") == ref_frame_name
+        mask = _df.select(mask_expr).to_series().to_numpy()
+        _df = _df.with_columns(model_size=pl.when(mask_expr).then(0).otherwise(None))
+        # Sanity check with the ref_stars_list:
+        if not (
+            _df.filter(mask_expr).select(pl.col("id")).to_series().to_numpy()
+            == ref_stars_list.ids
+        ).all():
+            msg = "The reference stars list does not match the frame names and IDs."
+            raise ValueError(msg)
+        # Add the values from the stars list to the DataFrame:
+        for col in ["x", "y", "flux", "threshold", "fwhm"]:
+            col_data = np.empty(_df.shape[0])
             col_data[mask] = getattr(ref_stars_list, col)
-            data[col] = col_data
+            _df = _df.with_columns(
+                pl.when(mask_expr).then(pl.lit(col_data)).otherwise(None).alias(col)
+            )
 
-        # Seed the data frame with the empty records:
-        self._df = pl.DataFrame(data, schema=self.SCHEMA)
+        # Set the schema:
+        _df = _df.with_columns(
+            [pl.col(col).cast(dtype) for col, dtype in self.SCHEMA.items()]
+        )
+
+        self._df = _df
 
     def __repr__(self) -> str:
         """Return a string representation of the StarsTable object."""
@@ -92,7 +116,7 @@ class StarsTable:
     @property
     def ids(self) -> list[int]:
         """Get the unique star IDs from the stars table."""
-        return self._df["id"].unique().sort().to_list()
+        return self.df.select(pl.col("id").unique().sort()).to_series().to_list()
 
     @classmethod
     def from_state(cls, stars_table_path: str | Path) -> "StarsTable":
@@ -600,7 +624,6 @@ class StarsTable:
         # return fig
 
 
-@functools.lru_cache(maxsize=128)
 def _get_rough_prediction_model(
     x: tuple[float, ...], y: tuple[float, ...], t: tuple[float, ...]
 ) -> Callable[[float], tuple[float, float]]:
