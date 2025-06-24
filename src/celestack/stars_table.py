@@ -215,10 +215,7 @@ class StarsTable:
 
         # Limit to only the stars which have been propagated:
         propagated_ids = (
-            df_known.filter(pl.col("model_size") >= 1)
-            .select("id")
-            .to_series()
-            .to_list()
+            df_known.filter(pl.col("model_size") > 0).select("id").to_series()
         )
         df_propagated = df_known.filter(pl.col("id").is_in(propagated_ids))
 
@@ -236,7 +233,6 @@ class StarsTable:
             .select("id")
             .head(self.MODEL_MAX_NEIGHBORS)
             .to_series()
-            .to_list()
         )
 
         return df_propagated.filter(pl.col("id").is_in(neighbors_ids))
