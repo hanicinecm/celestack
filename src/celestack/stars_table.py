@@ -207,11 +207,11 @@ class StarsTable:
         Returns:
             A DataFrame containing only the rows for a number of neighbors (excluding
             the star itself) closest to the specified star ID, which have known
-            position (i.e. x and y coordinates are not NaN/Null).
+            position (i.e. x and y coordinates are not null).
             If no stars have yet been propagated, an empty DataFrame is returned.
         """
         # Limit to stars with known positions:
-        df_known = self.df.filter(pl.col("x").is_not_nan(), pl.col("x").is_not_null())
+        df_known = self.df.filter(pl.col("x").is_not_null())
 
         # Limit to only the stars which have been propagated:
         propagated_ids = (
@@ -491,11 +491,9 @@ class StarsTable:
         colorscale = "Viridis"
 
         # Add the stars to the plot, if any are detected for the selected frame:
-        stars_in_frame = (
-            stars.filter(pl.col("frame") == stars_frame)
-            .filter(pl.col("flux").is_not_nan())
-            .sort("id")
-        )
+        stars_in_frame = stars.filter(
+            pl.col("frame") == stars_frame, pl.col("flux").is_not_null()
+        ).sort("id")
         if stars_in_frame.is_empty():
             # No stars in the selected frame, nothing to plot:
             return
@@ -529,7 +527,7 @@ class StarsTable:
 
         # If the stars have been already propagated to any other frames, add the
         # trails as separate traces:
-        n_frames = stars.filter(pl.col("flux").is_not_nan())["frame"].n_unique()
+        n_frames = stars.filter(pl.col("flux").is_not_null())["frame"].n_unique()
         if n_frames > 1:
             stars_colors = stars_in_frame["flux"].to_numpy()
             vmin, vmax = stars_colors.min(), stars_colors.max()
