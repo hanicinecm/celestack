@@ -13,6 +13,7 @@ Celestack is a Python library for stacking untracked starscape astrophotography 
 - Never discard user changes. If conflicts arise, ask before rewriting.
 - Do not commit changes unless asked.
 - Use the [Conventional Commits](https://www.conventionalcommits.org/) standard for all commit messages (e.g., `feat:`, `fix:`, `refactor:`, `test:`, `docs:`, `chore:`).
+- Include a brief body in commit messages summarizing what was changed, with slightly more detail than the title line.
 - Always push local commits to the remote after committing.
 
 ## Project Layout
