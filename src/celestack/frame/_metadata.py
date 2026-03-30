@@ -108,19 +108,19 @@ def extract_exif_metadata(path: Path) -> ExifMetadata:
     if model_tag is not None:
         camera_model_value = str(model_tag)
 
-    exposure_tag = tags.get("EXIF ExposureTime")
+    exposure_tag = tags.get("EXIF ExposureTime") or tags.get("Image ExposureTime")
     exposure = as_float(exposure_tag)
     if exposure is not None:
         exposure_value = exposure
 
-    iso_tag = tags.get("EXIF ISOSpeedRatings")
+    iso_tag = tags.get("EXIF ISOSpeedRatings") or tags.get("Image ISOSpeedRatings")
     if iso_tag is not None:
         try:
             iso_value = int(str(iso_tag))
         except ValueError:
             pass
 
-    focal_tag = tags.get("EXIF FocalLength")
+    focal_tag = tags.get("EXIF FocalLength") or tags.get("Image FocalLength")
     focal = as_float(focal_tag)
     if focal is not None:
         focal_length_value = focal

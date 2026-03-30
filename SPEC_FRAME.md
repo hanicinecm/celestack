@@ -103,12 +103,9 @@ CELESTACK_METADATA_KEY = "celestack"
 | `path` | `Path` | `_path` |
 | `downscale_factor` | `int` | `_downscale_factor` (from Celestack metadata or default 1) |
 | `bit_depth` | `int` | `_bit_depth` |
+| `metadata` | `ExifMetadata` | `_metadata` (frozen dataclass with `datetime`, `camera_model`, `exposure`, `iso`, `focal_length`) |
 | `is_tiled` | `bool` | opens TIFF and checks `page.is_tiled`; always `False` for non-TIFF files |
 | `timestamp` | `float \| None` | getter/setter (see below) |
-| `camera_model` | `str \| None` | `_metadata.get("camera_model")` |
-| `exposure` | `float \| None` | `_metadata.get("exposure")` |
-| `iso` | `int \| None` | `_metadata.get("iso")` |
-| `focal_length` | `float \| None` | `_metadata.get("focal_length")` |
 
 **`timestamp` property**:
 

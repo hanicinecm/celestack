@@ -9,6 +9,7 @@ from pathlib import Path
 import numpy as np
 import plotly.graph_objects as go
 import tifffile
+import zarr
 
 from celestack.exceptions import DownscaleError, TileReadError
 from celestack.frame._backends import Backend, TiffBackend, backend_types
@@ -19,6 +20,7 @@ from celestack.frame._image_ops import (
     to_grayscale,
 )
 from celestack.frame._metadata import (
+    ExifMetadata,
     build_tiff_extratags,
     extract_exif_metadata,
     parse_datetime_to_epoch,
@@ -81,6 +83,11 @@ class Frame:
     def downscale_factor(self) -> int:
         """Return the proxy downscale factor stored in frame metadata."""
         return self._downscale_factor
+
+    @property
+    def metadata(self) -> ExifMetadata:
+        """Return the extracted EXIF metadata."""
+        return self._metadata
 
     @property
     def is_tiled(self) -> bool:
@@ -240,8 +247,12 @@ class Frame:
             raise TileReadError(msg)
 
         if self.is_tiled:
-            mmap = tifffile.memmap(self.path)
-            return np.asarray(mmap[y : y + height, x : x + width])
+            with tifffile.TiffFile(self.path) as tif:
+                store = tif.aszarr()
+                z = zarr.open_array(store, mode="r")
+                tile = np.asarray(z[y : y + height, x : x + width])
+                store.close()
+            return tile
 
         warnings.warn(
             f"Frame is not tiled: loading full image for tile read ({self.path.name})",
@@ -268,20 +279,24 @@ class Frame:
                 xref="x",
                 yref="y",
                 x=0,
-                y=full_h,
+                y=0,
                 sizex=full_w,
                 sizey=full_h,
                 sizing="stretch",
-                xanchor="left",
-                yanchor="top",
                 layer="below",
             )
         )
-        fig.update_xaxes(range=[0, full_w], showgrid=False, zeroline=False)
-        fig.update_yaxes(
-            range=[full_h, 0], showgrid=False, zeroline=False, scaleanchor="x"
+        fig.update_layout(
+            title=self.path.name,
+            xaxis=dict(range=[0, full_w], showgrid=False, zeroline=False),
+            yaxis=dict(
+                range=[full_h, 0],
+                showgrid=False,
+                zeroline=False,
+                scaleanchor="x",
+            ),
+            margin=dict(l=0, r=0, t=30, b=0),
         )
-        fig.update_layout(title=self.path.name, template="plotly_white")
         return fig
 
     def __repr__(self) -> str:
