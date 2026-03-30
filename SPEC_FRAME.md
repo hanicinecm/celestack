@@ -4,10 +4,10 @@
 
 Frame is the foundational image container for Celestack. Every other component (MaskBuilder, StarCatalog, SkyTransform, average_frames, Project) depends on it. No implementation exists yet — `src/celestack/__init__.py` is empty, `tests/` directory doesn't exist. This is the first real code in the project.
 
-## Design Decisions (from discussion)
+## Design Decisions
 
 1. **Add numpy explicitly** to pyproject.toml (currently only a transitive dep).
-2. **`save_downscaled` has `grayscale=True` parameter** — defaults to converting RGB→grayscale, but can be disabled.
+2. **`save_downscaled` has `bit_depth=8, grayscale=True` parameters** — defaults to 8-bit grayscale output, both overridable.
 3. **EXIF extraction from all formats** — exifread handles TIFF, JPEG, PNG uniformly.
 4. **Tile read fallback** — non-tiled TIFFs: load full image + slice with a warning (not an error).
 5. **No astropy in Frame** — reserved for later components.
@@ -15,15 +15,10 @@ Frame is the foundational image container for Celestack. Every other component (
 7. **`timestamp` is `float | None`** — EXIF datetimes converted to epoch seconds. Sequence-number pseudo-timestamps are equally valid (transform fitting doesn't need real time, just a monotonically increasing proxy).
 8. **Metadata stored as dict** — raw EXIF data in `_metadata: dict`. Written back to TIFF on save.
 9. **`timestamp` property with override** — getter derives from `_metadata` (returns float), setter allows Project to assign pseudo-timestamps. Override takes precedence.
-10. **All Celestack-written files are tiled TIFFs** — including masks (no more PNG). Enables uniform metadata embedding and tile reading.
-11. **Celestack metadata embedded in TIFF** — `downscale_factor` and `timestamp` stored via tifffile's `metadata` parameter (JSON in ImageDescription tag). Makes frames self-describing — no external state needed.
+10. **All Celestack-written files are tiled TIFFs** — including masks (no more PNG). Enables uniform tile reading across the whole project.
+11. **Celestack metadata only in proxy files** — `downscale_factor` and `timestamp` are embedded via tifffile's `metadata` parameter (JSON in ImageDescription tag) only by `save_downscaled`. Full-res files written by `save()` carry EXIF tags but no Celestack metadata. Proxies are fully self-describing; full-res frame timestamps come from EXIF, or are set via the timestamp setter before `save_downscaled` is called so they flow into the proxy.
 12. **`downscale_factor` is NOT a constructor parameter** — always read from embedded Celestack metadata in the TIFF, defaulting to 1 for external files. Only `save_downscaled` produces frames with `downscale_factor > 1`.
 13. **Constructor signature is `Frame(path)`** — single argument. All other state is read from the file itself (EXIF metadata, Celestack metadata, bit depth).
-
-## SPEC.md Updates
-
-- Add a note that `t` in the transform `f(x, y, t) → (x_ref, y_ref)` does not need to be real acquisition time — any monotonically increasing proxy (including auto-incremented sequence numbers extracted from filenames) is sufficient, since all frames are assumed to be from one continuous session.
-- Change `mask.png` → `mask.tiff` in both `full_res/` and `proxy/` directories.
 
 ## Files to Create/Modify
 
@@ -34,14 +29,13 @@ Frame is the foundational image container for Celestack. Every other component (
 | `src/celestack/__init__.py` | Update — export Frame |
 | `tests/conftest.py` | Create — shared test fixtures |
 | `tests/test_frame.py` | Create — Frame tests |
-| `pyproject.toml` | Update — add numpy to dependencies |
 
 ## Two Kinds of Files
 
 Frame transparently handles two categories of files:
 
-1. **External files** (user-provided, before ingest): TIFF, JPEG, PNG. No Celestack metadata. `downscale_factor` defaults to 1, `timestamp` derived from EXIF (or None).
-2. **Celestack files** (written by `save`/`save_downscaled`): always tiled TIFF. Celestack metadata embedded in ImageDescription as JSON: `{"downscale_factor": N, "timestamp": T}`. EXIF metadata also preserved as TIFF tags.
+1. **Files without Celestack metadata**: external user-provided files (TIFF, JPEG, PNG) and full-res Celestack files written by `save()`. `downscale_factor` defaults to 1. `timestamp` from EXIF, or `None`.
+2. **Celestack proxy files** (written by `save_downscaled`): always tiled TIFF. Celestack metadata embedded in ImageDescription as JSON: `{"downscale_factor": N, "timestamp": T}`. EXIF metadata also preserved as TIFF tags.
 
 The constructor detects which kind it's dealing with by checking for the Celestack metadata dict.
 
@@ -109,6 +103,7 @@ CELESTACK_METADATA_KEY = "celestack"
 | `path` | `Path` | `_path` |
 | `downscale_factor` | `int` | `_downscale_factor` (from Celestack metadata or default 1) |
 | `bit_depth` | `int` | `_bit_depth` |
+| `is_tiled` | `bool` | opens TIFF and checks `page.is_tiled`; always `False` for non-TIFF files |
 | `timestamp` | `float \| None` | getter/setter (see below) |
 | `camera_model` | `str \| None` | `_metadata.get("camera_model")` |
 | `exposure` | `float \| None` | `_metadata.get("exposure")` |
@@ -147,17 +142,12 @@ Getter logic: return override if set (from Celestack metadata or setter), else d
 - `del self.__dict__["array"]` (KeyError is caught silently).
 - Resets cached_property so next access re-loads from disk.
 
-### Step 5: `save(self, path: Path) -> None`
+### Step 5: `save(self, path: Path) -> Frame`
 
-1. Load `self.array`.
-2. Build Celestack metadata dict for embedding:
+Used for full-res files. If the source is already a tiled TIFF, copies it verbatim; otherwise writes a new tiled TIFF with EXIF metadata — no Celestack metadata in either case. Returns a new `Frame` pointing to `path`.
 
-   ```python
-   celestack_meta = {"downscale_factor": self._downscale_factor}
-   if self.timestamp is not None:
-       celestack_meta["timestamp"] = self.timestamp
-   ```
-
+1. **If `self.is_tiled`**: use `shutil.copy2(self._path, path)` and return `Frame(path)` immediately. No array loading, no re-encoding.
+2. Load `self.array`.
 3. Build `extratags` list from `_metadata` for EXIF preservation. tifffile supports basic TIFF tags via `extratags` tuples of `(code, dtype, count, value, writeonce)`:
    - DateTime (tag 306): written via tifffile's `datetime=` parameter from `_metadata["datetime"]`
    - Model (tag 272): `(272, 2, 0, value, True)` — ASCII string
@@ -165,22 +155,24 @@ Getter logic: return override if set (from Celestack metadata or setter), else d
    - ISOSpeedRatings (tag 34855): `(34855, 3, 1, value, True)` — SHORT
    - FocalLength (tag 37386): `(37386, 5, 1, (numerator, denominator), True)` — RATIONAL
    - Note: these are written as top-level TIFF tags (not EXIF sub-IFD, which tifffile doesn't support). Round-trip with exifread needs testing — if exifread doesn't find them, we fall back to DateTime + Model only.
-4. Write with `tifffile.imwrite`:
+3. Write with `tifffile.imwrite`:
    - `tile=(256, 256)`, `compression="zlib"`
    - `photometric="rgb"` for 3-channel, `"minisblack"` for grayscale/boolean
-   - `metadata=celestack_meta` (written as JSON in ImageDescription)
-5. Only include extratags for metadata keys that exist in `_metadata`.
+   - No `metadata=` argument (no Celestack JSON in ImageDescription)
+4. Only include extratags for metadata keys that exist in `_metadata`.
+5. Return `Frame(path)`.
 
-### Step 6: `save_downscaled(self, path, downscale_factor, bit_depth, *, grayscale=True) -> Frame`
+### Step 6: `save_downscaled(self, path, downscale_factor, bit_depth=8, *, grayscale=True) -> Frame`
 
 1. Guard: raise `DownscaleError` if `self._downscale_factor != 1`.
-2. Load `self.array`.
-3. If `grayscale=True` and array is RGB `(H, W, 3)`: convert using luminance weights `[0.2989, 0.5870, 0.1140]` via `np.dot(array[..., :3], weights)`.
-4. Convert to PIL Image, resize with `Image.LANCZOS` to `(W // downscale_factor, H // downscale_factor)`. Note: PIL takes `(width, height)`.
-5. Convert bit depth: scale values proportionally `(array * ((2**target - 1) / (2**source - 1)))`, cast to target dtype (8→uint8, 16→uint16, 32→float32).
-6. Build Celestack metadata: `{"downscale_factor": downscale_factor, "timestamp": self.timestamp}` (carry over timestamp from source frame).
-7. Save as tiled TIFF with Celestack metadata + EXIF metadata (same approach as `save()`).
-8. Return `Frame(path)` — the new frame reads `downscale_factor` from its own embedded metadata.
+2. Guard: raise `ValueError` if `self.timestamp is None` — timestamp must be set (from EXIF or via the setter) before downscaling.
+3. Load `self.array`.
+4. If `grayscale=True` and array is RGB `(H, W, 3)`: convert using luminance weights `[0.2989, 0.5870, 0.1140]` via `np.dot(array[..., :3], weights)`.
+5. Convert to PIL Image, resize with `Image.LANCZOS` to `(W // downscale_factor, H // downscale_factor)`. Note: PIL takes `(width, height)`.
+6. Convert bit depth: scale values proportionally `(array * ((2**target - 1) / (2**source - 1)))`, cast to target dtype (8→uint8, 16→uint16, 32→float32).
+7. Build Celestack metadata: `{"downscale_factor": downscale_factor, "timestamp": self.timestamp}`.
+8. Save as tiled TIFF with `metadata=celestack_meta` (JSON in ImageDescription) + EXIF extratags (same tag list as `save()`).
+9. Return `Frame(path)` — the new frame reads `downscale_factor` from its own embedded metadata.
 
 ### Step 7: `read_tile(self, x, y, width, height) -> np.ndarray`
 
@@ -192,11 +184,19 @@ Getter logic: return override if set (from Celestack metadata or setter), else d
 
 ### Step 8: `plot(self) -> go.Figure`
 
-- RGB `(H, W, 3)`: `px.imshow(self.array)`
-- Grayscale `(H, W)` non-boolean: `px.imshow(self.array, color_continuous_scale="gray")`
-- Boolean `(H, W)` bool dtype: `px.imshow(self.array.astype(np.uint8) * 255, color_continuous_scale="gray")`
-- Set `title=self._path.name`, square pixel aspect ratio via `fig.update_yaxes(scaleanchor="x")`.
-- Return `Figure` (never call `.show()`).
+Renders the image as a Plotly layout image (background) on an empty figure whose axes are in **full-res pixel coordinates**. This is lightweight (no per-pixel trace), keeps the figure small, and makes overlaying full-res annotations straightforward.
+
+1. Get array shape `(H, W)` (or `(H, W, 3)`). Compute full-res extents: `fw = W * self._downscale_factor`, `fh = H * self._downscale_factor`.
+2. Convert the array to an 8-bit PIL Image for embedding:
+   - Boolean: `(array.astype(np.uint8) * 255)`, mode `"L"`.
+   - Grayscale non-boolean: scale to 8-bit `(array / array.max() * 255).astype(np.uint8)` if not already uint8, mode `"L"`.
+   - RGB: scale to 8-bit per channel if needed, mode `"RGB"`.
+3. Encode as base64 PNG: write PIL image to `io.BytesIO`, base64-encode, produce `"data:image/png;base64,..."` URI.
+4. Build an empty `go.Figure()`.
+5. Add the image via `fig.add_layout_image` with `xref="x"`, `yref="y"`, `x=0`, `y=fh`, `sizex=fw`, `sizey=fh`, `xanchor="left"`, `yanchor="top"`, `layer="below"`, `sizing="stretch"`.
+6. Set axes: `fig.update_xaxes(range=[0, fw], showgrid=False)`, `fig.update_yaxes(range=[fh, 0], showgrid=False, scaleanchor="x")` (y reversed so top of image = y=fh).
+7. Set `fig.update_layout(title=self._path.name)`.
+8. Return `Figure` (never call `.show()`).
 
 ### Step 9: `__repr__`
 
@@ -259,11 +259,12 @@ Small images created programmatically — no real astrophotography files needed:
 
 **Save**:
 
-- `test_save_creates_tiled_tiff` — open with tifffile, verify `page.is_tiled`
+- `test_save_returns_frame` — returned Frame points to the new path
+- `test_save_creates_tiled_tiff` — non-tiled input re-encoded as tiled TIFF
 - `test_save_preserves_array_data` — save, reload, `np.array_equal`
 - `test_save_preserves_exif_metadata` — save, reload, verify camera_model and datetime survive
-- `test_save_embeds_celestack_metadata` — save, reload, verify downscale_factor and timestamp read back correctly
-- `test_save_embeds_timestamp_from_setter` — set pseudo-timestamp, save, reload, verify it persists
+- `test_save_does_not_embed_celestack_metadata` — save, reload, verify no Celestack metadata in ImageDescription (downscale_factor defaults to 1, timestamp comes from EXIF only)
+- `test_save_copies_tiled_tiff` — already-tiled TIFF is copied verbatim; data identical, no re-encoding (verify via byte equality)
 
 **Downscale**:
 
@@ -274,6 +275,13 @@ Small images created programmatically — no real astrophotography files needed:
 - `test_save_downscaled_returns_frame` — returned Frame has correct downscale_factor read from file
 - `test_save_downscaled_from_proxy_raises` — Frame with downscale_factor>1 raises DownscaleError
 - `test_save_downscaled_carries_timestamp` — source timestamp (EXIF or pseudo) is preserved in output
+- `test_save_downscaled_no_timestamp_raises` — frame with no timestamp (no EXIF, no setter) raises ValueError
+
+**Tiled layout detection**:
+
+- `test_is_tiled_tiff` — tiled TIFF returns `True`
+- `test_is_tiled_non_tiled_tiff` — strip-layout TIFF returns `False`
+- `test_is_tiled_non_tiff` — JPEG returns `False`
 
 **Tile reading**:
 
@@ -287,6 +295,8 @@ Small images created programmatically — no real astrophotography files needed:
 - `test_plot_rgb_returns_figure` — `isinstance(result, go.Figure)`
 - `test_plot_grayscale_returns_figure`
 - `test_plot_boolean_mask_returns_figure`
+- `test_plot_axes_in_fullres_coords` — x/y axis ranges equal `W * downscale_factor` and `H * downscale_factor`
+- `test_plot_proxy_axes_in_fullres_coords` — proxy frame (downscale_factor=4) axes cover full-res extent, not proxy dimensions
 
 ## Verification
 

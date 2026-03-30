@@ -50,6 +50,7 @@ source = { editable = "." }
 dependencies = [
     { name = "astropy" },
     { name = "exifread" },
+    { name = "numpy" },
     { name = "pillow" },
     { name = "plotly" },
     { name = "polars" },
@@ -67,6 +68,7 @@ dev = [
 requires-dist = [
     { name = "astropy", specifier = ">=7.2.0" },
     { name = "exifread", specifier = ">=3.5.1" },
+    { name = "numpy", specifier = ">=2.4.4" },
     { name = "pillow", specifier = ">=12.1.1" },
     { name = "plotly", specifier = ">=6.6.0" },
     { name = "polars", specifier = ">=1.39.3" },
