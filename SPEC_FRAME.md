@@ -155,12 +155,12 @@ Used for full-res files. If the source is already a tiled TIFF, copies it verbat
    - ISOSpeedRatings (tag 34855): `(34855, 3, 1, value, True)` — SHORT
    - FocalLength (tag 37386): `(37386, 5, 1, (numerator, denominator), True)` — RATIONAL
    - Note: these are written as top-level TIFF tags (not EXIF sub-IFD, which tifffile doesn't support). Round-trip with exifread needs testing — if exifread doesn't find them, we fall back to DateTime + Model only.
-3. Write with `tifffile.imwrite`:
+4. Write with `tifffile.imwrite`:
    - `tile=(256, 256)`, `compression="zlib"`
    - `photometric="rgb"` for 3-channel, `"minisblack"` for grayscale/boolean
    - No `metadata=` argument (no Celestack JSON in ImageDescription)
-4. Only include extratags for metadata keys that exist in `_metadata`.
-5. Return `Frame(path)`.
+5. Only include extratags for metadata keys that exist in `_metadata`.
+6. Return `Frame(path)`.
 
 ### Step 6: `save_downscaled(self, path, downscale_factor, bit_depth=8, *, grayscale=True) -> Frame`
 
