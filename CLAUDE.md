@@ -33,6 +33,12 @@ All commands assume the virtual environment is active (`source .venv/bin/activat
 
 The project uses `uv` for environment management but must remain installable with `pip`.
 
+## Markdown Style
+
+- Always add spaces around `|` in tables, including separator rows: `| --- | --- |` not `|---|---|`.
+- Surround lists with blank lines (before and after).
+- Surround fenced code blocks with blank lines (before and after).
+
 ## Coding Style
 
 - 4-space indentation, 88-character line limit (ruff/Black default).

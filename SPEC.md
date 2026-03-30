@@ -50,13 +50,13 @@ Only artifacts that are expensive to recompute or represent user decisions are p
       light/                # copies of ingested light frames (full-res, RGB)
       dark/                 # copies of ingested dark frames (full-res, RGB)
       transformed/          # dark-subtracted, sky-corrected full-res frames (persisted)
-      mask.png              # foreground mask (full-res, boolean)
+      mask.tiff             # foreground mask (full-res, boolean)
       master_dark.tiff      # averaged dark frame (full-res)
       master_light.tiff     # averaged light frame (full-res); only if algorithmic mask is used
     proxy/
       light/                # downscaled, grayscale, reduced bit-depth proxies
       dark/                 # same for darks
-      mask.png              # foreground mask (proxy-res, boolean, downscaled from full-res)
+      mask.tiff             # foreground mask (proxy-res, boolean, downscaled from full-res)
       master_dark.tiff      # averaged dark frame (proxy-res)
       master_light.tiff     # averaged light frame (proxy-res); only if algorithmic mask is used
 ```
@@ -65,7 +65,7 @@ Notes:
 
 - The `master_light` is only created when the algorithmic mask creation path is used (needed for clustering on full RGB + full bit depth). It is not created when the user supplies an external mask.
 - `stars.parquet` is a single table. Reference frame stars are the subset where `frame_id == reference_frame`. Star tracks across the stack are additional rows in the same table.
-- `transform.*` is a single model that maps `(x, y, t) → (x_ref, y_ref)`, where `t` is acquisition time relative to the reference frame. Serialization format is owned by the SkyTransform class and depends on the model choice.
+- `transform.*` is a single model that maps `(x, y, t) → (x_ref, y_ref)`, where `t` is a time-like variable relative to the reference frame (see SkyTransform section). Serialization format is owned by the SkyTransform class and depends on the model choice.
 
 ## Building Blocks
 
@@ -73,15 +73,17 @@ Notes:
 
 Universal image container. Represents any single image in the system — light frames, dark frames, master darks, master lights, and masks are all Frame instances.
 
-- **Constructor**: `Frame(path, downscale_factor=1)`. Reads bit depth from the file. Extracts metadata (timestamp, camera model, exposure, ISO, focal length) from TIFF tags where available; missing metadata are supported.
+- **Constructor**: `Frame(path)`. Reads bit depth from the file. Extracts EXIF metadata (timestamp, camera model, exposure, ISO, focal length) where available; missing metadata are supported. For Celestack-written TIFFs, also reads embedded Celestack metadata (downscale factor, timestamp).
 - **Lazy array access**: `frame.array` loads the image into memory on first access and caches it. `frame.unload()` drops the cached array to free memory.
 - **Tile reading**: `frame.read_tile(x, y, width, height)` reads a rectangular region from disk without loading the full array. Enables memory-efficient tiled averaging of large stacks.
 - **Array shape**: depends on the image — `(H, W, 3)` for full-res RGB originals, `(H, W)` for grayscale proxies, `(H, W)` for boolean masks. No normalization; callers handle the shape they expect.
-- **Downscaling**: `frame.save_downscaled(path, downscale_factor, bit_depth)` creates a downscaled copy on disk and returns a new `Frame` instance pointing to it with the given `downscale_factor`. Only available from the downscale factor of 1.
+- **Downscaling**: `frame.save_downscaled(path, downscale_factor, bit_depth, *, grayscale=True)` creates a downscaled copy on disk and returns a new `Frame` instance pointing to it. Embeds the downscale factor in the output file's Celestack metadata. Only available from a downscale factor of 1. When `grayscale=True` (the default), converts RGB input to grayscale.
 - **Coordinate recovery**: `downscale_factor` enables converting between proxy and full-res coordinates (multiply proxy coordinates by `downscale_factor` to get full-res coordinates).
-- **Saving**: `frame.save(path)` writes the array to disk, including metadata (timestamp, camera model, etc.) if present.
+- **Saving**: `frame.save(path)` writes the array to disk as a tiled TIFF, including EXIF metadata and Celestack metadata (downscale factor, timestamp). All Celestack-written files use tiled TIFF format with embedded metadata, making them self-describing.
 - **Plotting**: `frame.plot() → Figure` renders the image as a Plotly figure. The caller decides whether to `.show()` it or embed it.
-- **Timestamp**: carried as an attribute. If no timestamp is available in metadata, it is inferred from the filename using best-effort parsing (e.g. embedded date/time patterns). The inference strategy is an implementation detail. A missing timestamp is a hard error — every frame must have one, since the transform fitting depends on acquisition time.
+- **Timestamp**: a `float | None` property. The getter returns (in priority order): an explicitly set override, a float derived from EXIF datetime, or `None`. The setter allows external code (e.g. Project) to assign pseudo-timestamps. Timestamp is `None` for frames without EXIF datetime until explicitly set. When a frame is saved, the timestamp (if set) is embedded in the Celestack metadata for persistence.
+- **Downscale factor**: read-only, derived from embedded Celestack metadata in the TIFF file. Defaults to 1 for external (non-Celestack) files. Only `save_downscaled` produces frames with a downscale factor greater than 1.
+- **Two kinds of files**: Frame transparently handles external files (user-provided TIFF/JPEG/PNG with EXIF metadata, downscale factor defaults to 1) and Celestack files (tiled TIFFs with embedded Celestack metadata — fully self-describing).
 
 ### MaskBuilder
 
@@ -92,7 +94,7 @@ Creates the foreground mask. Creation paths:
 
 The algorithmic path requires interactive user input (cluster labeling, region edits). To preserve the principle that API methods are the single source of truth for both CLI and GUI, mask building is decomposed into multiple atomic, non-interactive methods on Project (e.g. compute clusters, apply labels, modify region). Each method takes concrete inputs and produces concrete outputs. The interactive loop — presenting results and collecting user choices — lives entirely in the CLI/GUI layer, which orchestrates these atomic methods. The detailed method decomposition is beyond the scope of this document.
 
-Output: a full-res mask (boolean array) saved to `frames/full_res/mask.png`, plus a downscaled proxy copy saved to `frames/proxy/mask.png`. The mask arrays can be loaded as Frames.
+Output: a full-res mask (boolean array) saved to `frames/full_res/mask.tiff`, plus a downscaled proxy copy saved to `frames/proxy/mask.tiff`. The mask arrays can be loaded as Frames.
 
 ### StarCatalog
 
@@ -106,7 +108,7 @@ Owns star detection, propagation, and the `stars.parquet` table.
 
 Fits and evaluates the spatial transformation model.
 
-- **Fitting**: takes the full star correspondence table from StarCatalog and fits a single function `f(x, y, t) → (x_ref, y_ref)`, where `t` is acquisition time relative to the reference frame.
+- **Fitting**: takes the full star correspondence table from StarCatalog and fits a single function `f(x, y, t) → (x_ref, y_ref)`, where `t` is a time-like variable relative to the reference frame. `t` does not need to be real acquisition time — any monotonically increasing proxy is sufficient (e.g. EXIF timestamps converted to epoch seconds, or auto-incremented sequence numbers extracted from filenames). All frames are assumed to be from one continuous session, so the transform varies smoothly with `t`.
 - **Model**: non-parametric (no assumed analytical form). Model type TBD — this is a key open design decision that will affect fitting strategy, outlier detection, serialization format, and runtime performance.
 - **Outlier detection**: after fitting, flags stars with large residuals. If a large fraction of a frame's stars are outliers, the frame is flagged for exclusion.
 - **Evaluation**: given a pixel `(x, y)` and time `t`, returns `(x_ref, y_ref)`.
@@ -121,7 +123,7 @@ Standalone utility function for averaging a list of Frames into a single Frame. 
 - **Methods**: configurable, mean, median, sigma-clipped mean, ...
 - **Output**: writes the averaged result to `output_path` and returns a `Frame` pointing to it.
 - **Memory efficiency**: uses tiled reading (`frame.read_tile()`) to process the stack in spatial chunks without holding all frames in memory simultaneously. Tile size is an internal tunable.
-- **Ingest note**: frames written to the project during ingest must use tiled TIFF layout to enable efficient tile reading.
+- **Ingest note**: all Celestack-written files use tiled TIFF layout with embedded Celestack metadata, enabling efficient tile reading and self-describing frames.
 
 ### Project
 
@@ -137,9 +139,9 @@ Top-level orchestrator and the single public API. Owns the workflow state, deleg
 
 Project config is a passive collection of parameters — changing a config value does not by itself alter any project artifacts. Changes only take effect when the workflow step that consumes the parameter is re-run, which triggers the standard invalidation cascade on all downstream steps. This means any parameter can be freely changed at any time; the user simply re-runs the relevant step to apply the new value.
 
-**Frame management**: paths are derived by convention from frame names and the project directory structure. Frame instances are constructed on-the-fly when needed, reading metadata (including timestamps) from the files.
+**Frame management**: paths are derived by convention from frame names and the project directory structure. Frame instances are constructed on-the-fly when needed via `Frame(path)` — all metadata (EXIF, Celestack metadata, downscale factor, timestamp) is read from the file itself.
 
-**Ingest**: copies original files into the project directory (re-writing as tiled TIFFs), generates proxies via `Frame.save_downscaled()`, and extracts/infers timestamps. Lights and darks are ingested separately; darks are optional. Accepted input formats: TIFF and common image formats supported by Pillow (JPEG, PNG, etc.). RAW camera formats (CR2, NEF, ARW, ...) are not supported. After ingest, the project is self-contained.
+**Ingest**: copies original files into the project directory (re-writing as tiled TIFFs with Celestack metadata), generates proxies via `Frame.save_downscaled()`, and handles timestamps. EXIF timestamps are extracted automatically; for frames without EXIF timestamps, Project performs batch inference on the full set of filenames (stripping common prefixes/suffixes and checking whether the remaining part forms a monotonically increasing sequence usable as a time-like variable). Inferred pseudo-timestamps are set on each Frame via the timestamp setter and persisted in the Celestack metadata when the frame is saved. Lights and darks are ingested separately; darks are optional. Accepted input formats: TIFF and common image formats supported by Pillow (JPEG, PNG, etc.). RAW camera formats (CR2, NEF, ARW, ...) are not supported. After ingest, the project is self-contained.
 
 **Select reference frame**: records the user's choice of reference frame in `project.toml`. All star detection and transform fitting is relative to this frame.
 
