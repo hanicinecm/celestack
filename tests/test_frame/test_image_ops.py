@@ -7,6 +7,7 @@ from celestack.frame._image_ops import (
     convert_bit_depth,
     downscale_by_block_average,
     scaled_preview_uint8,
+    subtract_arrays,
     to_grayscale,
 )
 
@@ -98,6 +99,54 @@ def test_convert_bit_depth_float_to_uint8() -> None:
     assert result.dtype == np.uint8
     assert result[0, 0] == 0
     assert result[0, 2] == 255
+
+
+# --- subtract_arrays ---
+
+
+def test_subtract_arrays_unsigned_clamps_underflow() -> None:
+    """Unsigned subtraction saturates at zero instead of wrapping."""
+    left = np.array([[20, 5], [100, 0]], dtype=np.uint16)
+    right = np.array([[3, 9], [20, 1]], dtype=np.uint16)
+
+    result = subtract_arrays(left, right)
+
+    assert result.dtype == np.uint16
+    np.testing.assert_array_equal(
+        result,
+        np.array([[17, 0], [80, 0]], dtype=np.uint16),
+    )
+
+
+def test_subtract_arrays_float_preserves_negative_values() -> None:
+    """Float subtraction keeps negative results."""
+    left = np.array([[1.5, 0.25]], dtype=np.float32)
+    right = np.array([[0.5, 0.75]], dtype=np.float32)
+
+    result = subtract_arrays(left, right)
+
+    assert result.dtype == np.float32
+    np.testing.assert_allclose(result, np.array([[1.0, -0.5]], dtype=np.float32))
+
+
+def test_subtract_arrays_signed_integer_clamps_to_dtype_bounds() -> None:
+    """Signed integer subtraction clips to the dtype range."""
+    left = np.array([[-120, 100]], dtype=np.int8)
+    right = np.array([[20, -40]], dtype=np.int8)
+
+    result = subtract_arrays(left, right)
+
+    assert result.dtype == np.int8
+    np.testing.assert_array_equal(result, np.array([[-128, 127]], dtype=np.int8))
+
+
+def test_subtract_arrays_bool_raises() -> None:
+    """Boolean arrays are not supported for subtraction."""
+    left = np.array([[True, False]])
+    right = np.array([[False, True]])
+
+    with pytest.raises(ValueError, match="Unsupported dtype for subtraction"):
+        subtract_arrays(left, right)
 
 
 # --- scaled_preview_uint8 ---

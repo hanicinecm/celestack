@@ -89,3 +89,22 @@ def to_grayscale(array: np.ndarray) -> np.ndarray:
     return np.tensordot(
         rgb, np.array([0.2989, 0.5870, 0.1140], dtype=np.float64), axes=([2], [0])
     )
+
+
+def subtract_arrays(left: np.ndarray, right: np.ndarray) -> np.ndarray:
+    """Subtract arrays while preserving the left dtype."""
+    if np.issubdtype(left.dtype, np.floating):
+        return (left - right).astype(left.dtype, copy=False)
+
+    if np.issubdtype(left.dtype, np.unsignedinteger):
+        result = left.astype(np.int64) - right.astype(np.int64)
+        limits = np.iinfo(left.dtype)
+        return np.clip(result, limits.min, limits.max).astype(left.dtype)
+
+    if np.issubdtype(left.dtype, np.signedinteger):
+        result = left.astype(np.int64) - right.astype(np.int64)
+        limits = np.iinfo(left.dtype)
+        return np.clip(result, limits.min, limits.max).astype(left.dtype)
+
+    msg = f"Unsupported dtype for subtraction: {left.dtype}"
+    raise ValueError(msg)

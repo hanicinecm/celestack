@@ -261,6 +261,147 @@ def test_save_jpeg_as_tiff_preserves_pixels(tmp_rgb_jpeg: Path, tmp_path: Path) 
     np.testing.assert_array_equal(saved.array, original)
 
 
+# --- Subtraction ---
+
+
+def test_subtraction_returns_in_memory_frame(
+    tmp_gray_tiff: Path, tmp_path: Path
+) -> None:
+    """Subtracting frames returns a pathless in-memory frame."""
+    dark_path = tmp_path / "dark.tif"
+    dark_array = np.full((IMG_H, IMG_W), fill_value=10, dtype=np.uint16)
+    from tests.utils import write_gray_tiff
+
+    dark = Frame(write_gray_tiff(dark_path, dark_array))
+    light = Frame(tmp_gray_tiff)
+
+    result = light - dark
+
+    assert isinstance(result, Frame)
+    assert result.path is None
+    assert result.shape == light.shape
+    assert result.dtype == light.dtype
+    assert result.bit_depth == light.bit_depth
+
+
+def test_subtraction_subtracts_pixels_and_clamps_unsigned(tmp_path: Path) -> None:
+    """Unsigned subtraction is saturating at zero."""
+    from tests.utils import write_gray_tiff
+
+    left_path = write_gray_tiff(
+        tmp_path / "left.tif",
+        np.array([[20, 5], [100, 0]], dtype=np.uint16),
+    )
+    right_path = write_gray_tiff(
+        tmp_path / "right.tif",
+        np.array([[3, 9], [20, 1]], dtype=np.uint16),
+    )
+
+    result = Frame(left_path) - Frame(right_path)
+
+    np.testing.assert_array_equal(
+        result.array,
+        np.array([[17, 0], [80, 0]], dtype=np.uint16),
+    )
+
+
+def test_subtraction_inherits_left_metadata_and_timestamp(
+    tmp_rgb_tiff: Path, tmp_path: Path
+) -> None:
+    """Result inherits metadata and timestamp from the left frame."""
+    from tests.utils import write_rgb_tiff
+
+    right_path = write_rgb_tiff(
+        tmp_path / "right.tif",
+        np.zeros((IMG_H, IMG_W, 3), dtype=np.uint16),
+    )
+    left = Frame(tmp_rgb_tiff)
+    left.timestamp = 123.0
+
+    result = left - Frame(right_path)
+
+    assert result.metadata.camera_make == left.metadata.camera_make
+    assert result.metadata.camera_model == left.metadata.camera_model
+    assert result.metadata.datetime == left.metadata.datetime
+    assert result.metadata.exposure == left.metadata.exposure
+    assert result.metadata.f_number == left.metadata.f_number
+    assert result.metadata.iso == left.metadata.iso
+    assert result.metadata.focal_length == left.metadata.focal_length
+    assert result.metadata.lens_model == left.metadata.lens_model
+    assert result.timestamp == pytest.approx(123.0)
+
+
+def test_subtraction_save_persists_in_memory_result(
+    tmp_gray_tiff: Path, tmp_path: Path
+) -> None:
+    """A subtraction result can be saved later as a TIFF."""
+    from tests.utils import write_gray_tiff
+
+    dark_path = write_gray_tiff(
+        tmp_path / "dark.tif",
+        np.full((IMG_H, IMG_W), fill_value=1, dtype=np.uint16),
+    )
+    result = Frame(tmp_gray_tiff) - Frame(dark_path)
+
+    saved = result.save(tmp_path / "subtracted.tif")
+
+    assert saved.path == tmp_path / "subtracted.tif"
+    np.testing.assert_array_equal(saved.array, result.array)
+
+
+def test_subtraction_shape_mismatch_raises(tmp_path: Path) -> None:
+    """Frames with different shapes cannot be subtracted."""
+    from tests.utils import write_gray_tiff
+
+    left_path = write_gray_tiff(
+        tmp_path / "left.tif",
+        np.zeros((10, 10), dtype=np.uint16),
+    )
+    right_path = write_gray_tiff(
+        tmp_path / "right.tif",
+        np.zeros((10, 11), dtype=np.uint16),
+    )
+
+    with pytest.raises(ValueError, match="Shape mismatch"):
+        _ = Frame(left_path) - Frame(right_path)
+
+
+def test_subtraction_dtype_mismatch_raises(tmp_path: Path) -> None:
+    """Frames with different dtypes cannot be subtracted."""
+    from tests.utils import write_gray_tiff
+
+    left_path = write_gray_tiff(
+        tmp_path / "left.tif",
+        np.zeros((10, 10), dtype=np.uint16),
+    )
+    right_path = write_gray_tiff(
+        tmp_path / "right.tif",
+        np.zeros((10, 10), dtype=np.uint8),
+    )
+
+    with pytest.raises(ValueError, match="Dtype mismatch"):
+        _ = Frame(left_path) - Frame(right_path)
+
+
+def test_subtraction_downscale_factor_mismatch_raises(
+    tmp_rgb_tiff: Path, tmp_path: Path
+) -> None:
+    """Frames with different downscale factors cannot be subtracted."""
+    from tests.utils import write_rgb_tiff
+
+    other_path = write_rgb_tiff(
+        tmp_path / "other.tif",
+        np.zeros((IMG_H, IMG_W, 3), dtype=np.uint16),
+    )
+    left = Frame(tmp_rgb_tiff).save_downscaled(tmp_path / "left_proxy.tif", 2)
+    right = Frame(other_path)
+    right.timestamp = 1.0
+    right = right.save_downscaled(tmp_path / "right_proxy.tif", 4)
+
+    with pytest.raises(ValueError, match="Downscale factor mismatch"):
+        _ = left - right
+
+
 # --- Downscale ---
 
 

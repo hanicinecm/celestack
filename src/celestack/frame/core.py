@@ -15,6 +15,7 @@ from celestack.frame._constants import CELESTACK_KEY
 from celestack.frame._image_ops import (
     convert_bit_depth,
     downscale_by_block_average,
+    subtract_arrays,
     to_grayscale,
 )
 from celestack.frame._metadata import (
@@ -63,9 +64,25 @@ class Frame:
         self._metadata = extract_exif_metadata(self._path)
         self._array_cache: np.ndarray | None = None
 
+    def _detached_copy(self) -> Frame:
+        """Return a pathless in-memory copy of the frame state."""
+        frame = type(self).__new__(type(self))
+        frame._path = None
+        frame._backend = self._backend
+        frame._shape = self._shape
+        frame._dtype = self._dtype
+        frame._bit_depth = self._bit_depth
+        frame._downscale_factor = self._downscale_factor
+        frame._timestamp_override = self._timestamp_override
+        frame._metadata = self._metadata
+        frame._array_cache = (
+            None if self._array_cache is None else self._array_cache.copy()
+        )
+        return frame
+
     @property
-    def path(self) -> Path:
-        """Return the on-disk path represented by this frame."""
+    def path(self) -> Path | None:
+        """Return the on-disk path represented by this frame, if any."""
         return self._path
 
     @property
@@ -109,6 +126,9 @@ class Frame:
     def array(self) -> np.ndarray:
         """Return image pixels, loading them lazily on first access."""
         if self._array_cache is None:
+            if self._path is None:
+                msg = "In-memory frame has no backing path and no cached array"
+                raise ValueError(msg)
             self._array_cache = self._backend.load_array(self._path)
         return self._array_cache
 
@@ -119,8 +139,8 @@ class Frame:
     def save(self, path: str | Path) -> Frame:
         """Save the frame as a TIFF and return the saved Frame.
 
-        TIFF sources are copied verbatim. Non-TIFF sources are written as
-        strip-layout TIFFs with EXIF metadata preserved.
+        Existing TIFF sources are copied verbatim. Non-TIFF or detached sources are
+        written as strip-layout TIFFs with EXIF metadata preserved.
 
         Args:
             path: Destination file path (.tif or .tiff).
@@ -137,7 +157,7 @@ class Frame:
             raise ValueError(msg)
         target.parent.mkdir(parents=True, exist_ok=True)
 
-        if is_tiff_path(self.path):
+        if self.path is not None and is_tiff_path(self.path):
             shutil.copy2(self.path, target)
             return Frame(target)
 
@@ -154,6 +174,49 @@ class Frame:
             extratags=build_tiff_extratags(self._metadata),
         )
         return Frame(target)
+
+    def __sub__(self, other: object) -> Frame:
+        """Return an in-memory frame produced by pixel-wise subtraction."""
+        if not isinstance(other, Frame):
+            return NotImplemented
+
+        self._validate_similarity(other)
+        result = self._detached_copy()
+        result._array_cache = subtract_arrays(self.array, other.array)
+        result._shape = tuple(int(v) for v in result._array_cache.shape)
+        result._dtype = np.dtype(result._array_cache.dtype)
+        return result
+
+    def _validate_similarity(self, other: Frame) -> None:
+        """Validate that two frames can be subtracted safely."""
+        if self.downscale_factor != other.downscale_factor:
+            msg = (
+                "Downscale factor mismatch: left frame has downscale factor "
+                f"{self.downscale_factor}, right frame has downscale factor "
+                f"{other.downscale_factor}"
+            )
+            raise ValueError(msg)
+        if self.shape != other.shape:
+            msg = (
+                f"Shape mismatch: left frame has shape {self.shape}, "
+                f"right frame has shape {other.shape}"
+            )
+            raise ValueError(msg)
+        if self.dtype != other.dtype:
+            msg = (
+                f"Dtype mismatch: left frame has dtype {self.dtype}, "
+                f"right frame has dtype {other.dtype}"
+            )
+            raise ValueError(msg)
+        if self.bit_depth != other.bit_depth:
+            msg = (
+                f"Bit depth mismatch: left frame has bit depth {self.bit_depth}, "
+                f"right frame has bit depth {other.bit_depth}"
+            )
+            raise ValueError(msg)
+        if self.dtype == np.bool_:
+            msg = "Boolean frames do not support subtraction"
+            raise ValueError(msg)
 
     def save_downscaled(
         self,
@@ -278,7 +341,7 @@ class Frame:
         """
         return plot_frame(
             self.array,
-            title=self.path.name,
+            title=self.path.name if self.path is not None else "<memory>",
             bit_depth=self.bit_depth,
             downscale_factor=self.downscale_factor,
             show_pixels=show_pixels,
