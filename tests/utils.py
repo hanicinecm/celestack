@@ -10,11 +10,8 @@ from pathlib import Path
 import numpy as np
 import tifffile
 
-
 EXIF_DATETIME = "2025:07:15 23:30:00"
-EXIF_DATETIME_EPOCH = datetime.strptime(
-    EXIF_DATETIME, "%Y:%m:%d %H:%M:%S"
-).timestamp()
+EXIF_DATETIME_EPOCH = datetime.strptime(EXIF_DATETIME, "%Y:%m:%d %H:%M:%S").timestamp()
 CAMERA_MAKE = "TestCorp"
 CAMERA_MODEL = "TestCam X100"
 LENS_MODEL = "TestLens 24mm f/1.4"
