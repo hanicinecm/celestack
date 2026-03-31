@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import shutil
-import warnings
 from pathlib import Path
 
 import numpy as np
@@ -118,7 +117,10 @@ class Frame:
         self._array_cache = None
 
     def save(self, path: str | Path) -> Frame:
-        """Save the frame as a tiled TIFF and return the saved Frame.
+        """Save the frame as a TIFF and return the saved Frame.
+
+        TIFF sources are copied verbatim. Non-TIFF sources are written as
+        strip-layout TIFFs with EXIF metadata preserved.
 
         Args:
             path: Destination file path.
@@ -129,7 +131,7 @@ class Frame:
         target = Path(path)
         target.parent.mkdir(parents=True, exist_ok=True)
 
-        if TiffBackend.can_handle(self.path) and self.is_tiled:
+        if TiffBackend.can_handle(self.path):
             shutil.copy2(self.path, target)
             return Frame(target)
 
@@ -139,7 +141,6 @@ class Frame:
         tifffile.imwrite(
             target,
             data=array,
-            tile=(DEFAULT_TILE_SIZE, DEFAULT_TILE_SIZE),
             compression="zlib",
             photometric=photometric,
             metadata=None,
@@ -215,20 +216,23 @@ class Frame:
         return Frame(target)
 
     def read_tile(self, x: int, y: int, width: int, height: int) -> np.ndarray:
-        """Read a rectangular tile region from the image.
+        """Read a rectangular region from the image.
+
+        Uses zarr-backed slicing for efficient partial reads on any TIFF
+        layout (tiled or strip).
 
         Args:
             x: Left pixel coordinate.
             y: Top pixel coordinate.
-            width: Tile width in pixels.
-            height: Tile height in pixels.
+            width: Region width in pixels.
+            height: Region height in pixels.
 
         Returns:
             Pixel data for the requested region.
 
         Raises:
             ValueError: If bounds are invalid or outside image extents.
-            TileReadError: If tile reading is requested for non-TIFF input.
+            TileReadError: If the file is not a TIFF.
         """
         if width <= 0 or height <= 0:
             msg = "width and height must be positive"
@@ -246,20 +250,12 @@ class Frame:
             msg = "Tile reading is available only for TIFF files"
             raise TileReadError(msg)
 
-        if self.is_tiled:
-            with tifffile.TiffFile(self.path) as tif:
-                store = tif.aszarr()
-                z = zarr.open_array(store, mode="r")
-                tile = np.asarray(z[y : y + height, x : x + width])
-                store.close()
-            return tile
-
-        warnings.warn(
-            f"Frame is not tiled: loading full image for tile read ({self.path.name})",
-            RuntimeWarning,
-            stacklevel=2,
-        )
-        return self.array[y : y + height, x : x + width]
+        with tifffile.TiffFile(self.path) as tif:
+            store = tif.aszarr()
+            z = zarr.open_array(store, mode="r")
+            tile = np.asarray(z[y : y + height, x : x + width])
+            store.close()
+        return tile
 
     def plot(self, *, show_pixels: bool = False) -> go.Figure:
         """Create a Plotly figure with the frame as a background image.

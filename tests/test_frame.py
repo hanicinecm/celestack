@@ -1,6 +1,5 @@
 """Tests for the Frame class."""
 
-import warnings
 from pathlib import Path
 
 import numpy as np
@@ -175,12 +174,16 @@ def test_save_returns_frame(tmp_rgb_tiff: Path, tmp_path: Path) -> None:
     assert saved.path == tmp_path / "saved.tif"
 
 
-def test_save_creates_tiled_tiff(tmp_non_tiled_tiff: Path, tmp_path: Path) -> None:
-    """Non-tiled input is re-encoded as a tiled TIFF."""
+def test_save_copies_non_tiled_tiff_verbatim(
+    tmp_non_tiled_tiff: Path, tmp_path: Path
+) -> None:
+    """Non-tiled TIFF is copied as-is, preserving strip layout."""
     frame = Frame(tmp_non_tiled_tiff)
     assert not frame.is_tiled
-    saved = frame.save(tmp_path / "tiled.tif")
-    assert saved.is_tiled
+    dest = tmp_path / "copied.tif"
+    saved = frame.save(dest)
+    assert not saved.is_tiled
+    assert tmp_non_tiled_tiff.read_bytes() == dest.read_bytes()
 
 
 def test_save_preserves_array_data(tmp_rgb_tiff: Path, tmp_path: Path) -> None:
@@ -349,15 +352,11 @@ def test_read_tile_correct_region(tmp_rgb_tiff: Path) -> None:
     np.testing.assert_array_equal(tile, full[5:20, 10:30])
 
 
-def test_read_tile_non_tiled_warns(tmp_non_tiled_tiff: Path) -> None:
-    """Non-tiled TIFF emits a warning but returns correct data."""
+def test_read_tile_non_tiled_tiff(tmp_non_tiled_tiff: Path) -> None:
+    """Non-tiled (strip) TIFF supports tile reading via zarr."""
     frame = Frame(tmp_non_tiled_tiff)
     full = frame.array
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        tile = frame.read_tile(0, 0, 16, 16)
-        assert len(caught) == 1
-        assert issubclass(caught[0].category, RuntimeWarning)
+    tile = frame.read_tile(0, 0, 16, 16)
     np.testing.assert_array_equal(tile, full[0:16, 0:16])
 
 

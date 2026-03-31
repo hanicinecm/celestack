@@ -93,7 +93,6 @@ def tmp_rgb_jpeg(tmp_path: Path) -> Path:
             piexif.ExifIFD.ExposureTime: (30, 1),
             piexif.ExifIFD.FNumber: (14, 10),
             piexif.ExifIFD.ISOSpeedRatings: 1600,
-
             piexif.ExifIFD.FocalLength: (24, 1),
             piexif.ExifIFD.LensModel: LENS_MODEL.encode(),
         },
