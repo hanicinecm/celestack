@@ -11,7 +11,7 @@ import tifffile
 
 from celestack.exceptions import DownscaleError
 from celestack.frame._backends import get_backends, is_tiff_path
-from celestack.frame._constants import CELESTACK_KEY, DEFAULT_TILE_SIZE
+from celestack.frame._constants import CELESTACK_KEY
 from celestack.frame._image_ops import (
     convert_bit_depth,
     downscale_by_block_average,
@@ -217,7 +217,6 @@ class Frame:
         tifffile.imwrite(
             target,
             data=converted,
-            tile=(DEFAULT_TILE_SIZE, DEFAULT_TILE_SIZE),
             compression="zlib",
             photometric=photometric,
             metadata=metadata,

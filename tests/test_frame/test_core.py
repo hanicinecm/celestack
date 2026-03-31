@@ -8,8 +8,7 @@ import pytest
 
 from celestack.exceptions import DownscaleError
 from celestack.frame import Frame
-
-from conftest import (
+from tests.utils import (
     CAMERA_MAKE,
     CAMERA_MODEL,
     EXIF_DATETIME_EPOCH,
@@ -17,7 +16,6 @@ from conftest import (
     IMG_W,
     LENS_MODEL,
 )
-
 
 # --- Constructor + metadata ---
 
@@ -127,6 +125,16 @@ def test_celestack_timestamp_overrides_exif(tmp_celestack_tiff: Path) -> None:
     assert frame.timestamp == pytest.approx(1752620400.0)
 
 
+def test_timestamp_reset_to_none(tmp_rgb_tiff: Path) -> None:
+    """Resetting override to None falls through to EXIF timestamp."""
+    frame = Frame(tmp_rgb_tiff)
+    original_ts = frame.timestamp
+    frame.timestamp = 999.0
+    assert frame.timestamp == pytest.approx(999.0)
+    frame.timestamp = None
+    assert frame.timestamp == pytest.approx(original_ts)
+
+
 # --- Lazy loading ---
 
 
@@ -229,6 +237,30 @@ def test_save_copies_tiled_tiff(tmp_tiled_tiff: Path, tmp_path: Path) -> None:
     assert tmp_tiled_tiff.read_bytes() == dest.read_bytes()
 
 
+def test_save_rejects_non_tiff_extension(tmp_rgb_tiff: Path, tmp_path: Path) -> None:
+    """save() raises ValueError for non-TIFF output path."""
+    frame = Frame(tmp_rgb_tiff)
+    with pytest.raises(ValueError, match="TIFF"):
+        frame.save(tmp_path / "out.png")
+
+
+def test_save_creates_parent_directories(tmp_rgb_tiff: Path, tmp_path: Path) -> None:
+    """save() creates missing parent directories."""
+    frame = Frame(tmp_rgb_tiff)
+    dest = tmp_path / "nested" / "deep" / "out.tif"
+    saved = frame.save(dest)
+    assert saved.path == dest
+    assert dest.exists()
+
+
+def test_save_jpeg_as_tiff_preserves_pixels(tmp_rgb_jpeg: Path, tmp_path: Path) -> None:
+    """Pixel data from a JPEG source survives re-encoding as TIFF."""
+    frame = Frame(tmp_rgb_jpeg)
+    original = frame.array.copy()
+    saved = frame.save(tmp_path / "from_jpeg.tif")
+    np.testing.assert_array_equal(saved.array, original)
+
+
 # --- Downscale ---
 
 
@@ -318,6 +350,67 @@ def test_save_downscaled_no_timestamp_raises(
         frame.save_downscaled(tmp_path / "proxy.tif", downscale_factor=2)
 
 
+def test_save_downscaled_rejects_non_tiff_extension(
+    tmp_rgb_tiff: Path, tmp_path: Path
+) -> None:
+    """save_downscaled() raises ValueError for non-TIFF output path."""
+    frame = Frame(tmp_rgb_tiff)
+    with pytest.raises(ValueError, match="TIFF"):
+        frame.save_downscaled(tmp_path / "proxy.png", downscale_factor=2)
+
+
+def test_save_downscaled_rejects_factor_below_one(
+    tmp_rgb_tiff: Path, tmp_path: Path
+) -> None:
+    """downscale_factor < 1 raises ValueError."""
+    frame = Frame(tmp_rgb_tiff)
+    with pytest.raises(ValueError, match="downscale_factor must be >= 1"):
+        frame.save_downscaled(tmp_path / "proxy.tif", downscale_factor=0)
+
+
+def test_save_downscaled_factor_one(tmp_rgb_tiff: Path, tmp_path: Path) -> None:
+    """factor=1 embeds Celestack metadata without spatial change."""
+    frame = Frame(tmp_rgb_tiff)
+    proxy = frame.save_downscaled(
+        tmp_path / "proxy.tif", downscale_factor=1, bit_depth=8
+    )
+    assert proxy.downscale_factor == 1
+    assert proxy.array.shape[0] == IMG_H
+    assert proxy.array.shape[1] == IMG_W
+    assert proxy.bit_depth == 8
+    assert proxy.timestamp is not None
+
+
+def test_save_downscaled_to_16bit(tmp_rgb_tiff: Path, tmp_path: Path) -> None:
+    """16-bit input downscaled to 16-bit preserves uint16 dtype."""
+    frame = Frame(tmp_rgb_tiff)
+    proxy = frame.save_downscaled(
+        tmp_path / "16bit.tif", downscale_factor=2, bit_depth=16
+    )
+    assert proxy.bit_depth == 16
+    assert proxy.array.dtype == np.uint16
+
+
+def test_save_downscaled_to_32bit(tmp_rgb_tiff: Path, tmp_path: Path) -> None:
+    """16-bit input downscaled to 32-bit produces float32 output."""
+    frame = Frame(tmp_rgb_tiff)
+    proxy = frame.save_downscaled(
+        tmp_path / "32bit.tif", downscale_factor=2, bit_depth=32
+    )
+    assert proxy.bit_depth == 32
+    assert proxy.array.dtype == np.float32
+
+
+def test_save_downscaled_grayscale_input(tmp_gray_tiff: Path, tmp_path: Path) -> None:
+    """Already-grayscale frame with grayscale=True stays 2D."""
+    frame = Frame(tmp_gray_tiff)
+    frame.timestamp = 1.0
+    proxy = frame.save_downscaled(
+        tmp_path / "gray_proxy.tif", downscale_factor=2, grayscale=True
+    )
+    assert proxy.array.ndim == 2
+
+
 # --- Tile reading ---
 
 
@@ -344,6 +437,37 @@ def test_read_tile_out_of_bounds_raises(tmp_rgb_tiff: Path) -> None:
         frame.read_tile(0, 0, IMG_W + 1, IMG_H)
 
 
+def test_read_tile_zero_width_raises(tmp_rgb_tiff: Path) -> None:
+    """Tile with zero width (x1 == x0) raises ValueError."""
+    frame = Frame(tmp_rgb_tiff)
+    with pytest.raises(ValueError, match="x1 must be greater than x0"):
+        frame.read_tile(10, 0, 10, 20)
+
+
+def test_read_tile_negative_coords_raises(tmp_rgb_tiff: Path) -> None:
+    """Negative tile coordinates raise ValueError."""
+    frame = Frame(tmp_rgb_tiff)
+    with pytest.raises(ValueError, match="non-negative"):
+        frame.read_tile(-1, 0, 10, 10)
+
+
+def test_read_tile_unload_drops_cache(tmp_rgb_tiff: Path) -> None:
+    """unload_array=True drops the cached array after reading tile."""
+    frame = Frame(tmp_rgb_tiff)
+    _ = frame.array
+    assert frame._array_cache is not None
+    frame.read_tile(0, 0, 10, 10, unload_array=True)
+    assert frame._array_cache is None
+
+
+def test_read_tile_full_extent(tmp_rgb_tiff: Path) -> None:
+    """Full-extent tile equals the full array."""
+    frame = Frame(tmp_rgb_tiff)
+    full = frame.array.copy()
+    tile = frame.read_tile(0, 0, IMG_W, IMG_H)
+    np.testing.assert_array_equal(tile, full)
+
+
 # --- Plot ---
 
 
@@ -368,8 +492,9 @@ def test_plot_boolean_mask_returns_figure(tmp_bool_mask_tiff: Path) -> None:
 def test_plot_axes_in_fullres_coords(tmp_rgb_tiff: Path) -> None:
     """Axes ranges match full-res pixel dimensions."""
     fig = Frame(tmp_rgb_tiff).plot()
-    x_range = fig.layout.xaxis.range
-    y_range = fig.layout.yaxis.range
+    layout = fig.to_plotly_json()["layout"]
+    x_range = layout["xaxis"]["range"]
+    y_range = layout["yaxis"]["range"]
     assert x_range[0] == 0
     assert x_range[1] == IMG_W
     assert y_range[0] == IMG_H
@@ -383,7 +508,36 @@ def test_plot_proxy_axes_in_fullres_coords(
     frame = Frame(tmp_celestack_tiff)
     proxy_h, proxy_w = frame.array.shape[:2]
     fig = frame.plot()
-    x_range = fig.layout.xaxis.range
-    y_range = fig.layout.yaxis.range
+    layout = fig.to_plotly_json()["layout"]
+    x_range = layout["xaxis"]["range"]
+    y_range = layout["yaxis"]["range"]
     assert x_range[1] == proxy_w * frame.downscale_factor
     assert y_range[0] == proxy_h * frame.downscale_factor
+
+
+def test_plot_show_pixels_grayscale(tmp_gray_tiff: Path) -> None:
+    """show_pixels=True on grayscale produces a Heatmap trace."""
+    fig = Frame(tmp_gray_tiff).plot(show_pixels=True)
+    assert isinstance(fig, go.Figure)
+    assert len(fig.to_plotly_json()["data"]) == 1
+    assert isinstance(fig.data[0], go.Heatmap)
+
+
+def test_plot_show_pixels_rgb(tmp_rgb_tiff: Path) -> None:
+    """show_pixels=True on RGB produces an Image trace."""
+    fig = Frame(tmp_rgb_tiff).plot(show_pixels=True)
+    assert isinstance(fig, go.Figure)
+    assert len(fig.to_plotly_json()["data"]) == 1
+    assert isinstance(fig.data[0], go.Image)
+
+
+# --- Repr ---
+
+
+def test_repr_format(tmp_rgb_tiff: Path) -> None:
+    """__repr__ includes the path and downscale_factor."""
+    frame = Frame(tmp_rgb_tiff)
+    r = repr(frame)
+    assert "Frame(" in r
+    assert str(tmp_rgb_tiff) in r
+    assert "downscale_factor=1" in r

@@ -8,42 +8,13 @@ import tifffile
 
 from celestack.averaging import average_frames
 from celestack.frame import Frame
-
-
-def _write_gray_tiff(path: Path, array: np.ndarray) -> Path:
-    """Write a simple grayscale TIFF for testing."""
-    tifffile.imwrite(path, data=array, photometric="minisblack")
-    return path
-
-
-def _write_rgb_tiff(path: Path, array: np.ndarray) -> Path:
-    """Write a simple RGB TIFF for testing."""
-    tifffile.imwrite(path, data=array, photometric="rgb")
-    return path
-
-
-@pytest.fixture()
-def gray_frames(tmp_path: Path) -> list[Frame]:
-    """Three 32x24 grayscale uint16 TIFFs with known values."""
-    arrays = [np.full((24, 32), fill_value=v, dtype=np.uint16) for v in [100, 200, 300]]
-    frames = []
-    for i, arr in enumerate(arrays):
-        p = _write_gray_tiff(tmp_path / f"frame_{i}.tif", arr)
-        frames.append(Frame(p))
-    return frames
-
-
-@pytest.fixture()
-def rgb_frames(tmp_path: Path) -> list[Frame]:
-    """Three 32x24 RGB uint8 TIFFs with known values."""
-    arrays = [
-        np.full((24, 32, 3), fill_value=v, dtype=np.uint8) for v in [50, 100, 150]
-    ]
-    frames = []
-    for i, arr in enumerate(arrays):
-        p = _write_rgb_tiff(tmp_path / f"rgb_{i}.tif", arr)
-        frames.append(Frame(p))
-    return frames
+from tests.utils import (
+    CAMERA_MAKE,
+    CAMERA_MODEL,
+    LENS_MODEL,
+    write_gray_tiff,
+    write_tiff,
+)
 
 
 def test_mean_grayscale(gray_frames: list[Frame], tmp_path: Path) -> None:
@@ -71,7 +42,7 @@ def test_sigma_clip_rejects_outlier(tmp_path: Path) -> None:
     arrays.append(np.full((24, 32), fill_value=60000, dtype=np.uint16))
     frames = []
     for i, arr in enumerate(arrays):
-        p = _write_gray_tiff(tmp_path / f"sc_{i}.tif", arr)
+        p = write_gray_tiff(tmp_path / f"sc_{i}.tif", arr)
         frames.append(Frame(p))
 
     result = average_frames(frames, tmp_path / "sc.tif", method="sigma_clip")
@@ -91,7 +62,7 @@ def test_band_processing_matches_full(tmp_path: Path) -> None:
     frames = []
     for i in range(5):
         arr = rng.integers(0, 255, (30, 40), dtype=np.uint8)
-        p = _write_gray_tiff(tmp_path / f"rand_{i}.tif", arr)
+        p = write_gray_tiff(tmp_path / f"rand_{i}.tif", arr)
         frames.append(Frame(p))
 
     full = average_frames(
@@ -117,8 +88,8 @@ def test_unknown_method_raises(gray_frames: list[Frame], tmp_path: Path) -> None
 
 def test_shape_mismatch_raises(tmp_path: Path) -> None:
     """Frames with different shapes raise ValueError."""
-    a = _write_gray_tiff(tmp_path / "a.tif", np.zeros((24, 32), dtype=np.uint16))
-    b = _write_gray_tiff(tmp_path / "b.tif", np.zeros((24, 48), dtype=np.uint16))
+    a = write_gray_tiff(tmp_path / "a.tif", np.zeros((24, 32), dtype=np.uint16))
+    b = write_gray_tiff(tmp_path / "b.tif", np.zeros((24, 48), dtype=np.uint16))
     with pytest.raises(ValueError, match="Shape mismatch"):
         average_frames([Frame(a), Frame(b)], tmp_path / "out.tif")
 
@@ -126,7 +97,7 @@ def test_shape_mismatch_raises(tmp_path: Path) -> None:
 def test_single_frame_returns_copy(tmp_path: Path) -> None:
     """Averaging a single frame returns the same data."""
     arr = np.arange(24 * 32, dtype=np.uint16).reshape(24, 32)
-    p = _write_gray_tiff(tmp_path / "single.tif", arr)
+    p = write_gray_tiff(tmp_path / "single.tif", arr)
     result = average_frames([Frame(p)], tmp_path / "out.tif", method="mean")
     np.testing.assert_array_equal(result.array, arr)
 
@@ -141,3 +112,78 @@ def test_non_tiled_input_works(tmp_path: Path) -> None:
         frames.append(Frame(p))
     result = average_frames(frames, tmp_path / "out.tif", method="mean")
     assert result.array.shape == (24, 32)
+
+
+def test_dtype_mismatch_raises(tmp_path: Path) -> None:
+    """Frames with different dtypes raise ValueError."""
+    a = write_gray_tiff(tmp_path / "a.tif", np.zeros((24, 32), dtype=np.uint16))
+    b = write_gray_tiff(tmp_path / "b.tif", np.zeros((24, 32), dtype=np.uint8))
+    with pytest.raises(ValueError, match="Dtype mismatch"):
+        average_frames([Frame(a), Frame(b)], tmp_path / "out.tif")
+
+
+def test_reference_frame_metadata_inherited(tmp_path: Path) -> None:
+    """Output inherits EXIF metadata from the reference frame."""
+    frames = []
+    for i in range(3):
+        arr = np.full((24, 32), fill_value=100, dtype=np.uint16)
+        p = write_gray_tiff(tmp_path / f"f_{i}.tif", arr)
+        frames.append(Frame(p))
+
+    # Create a reference frame with EXIF metadata
+    ref_arr = np.full((24, 32, 3), fill_value=100, dtype=np.uint16)
+    ref_path = tmp_path / "ref.tif"
+    extratags = [
+        (271, "s", 0, CAMERA_MAKE, True),
+        (272, "s", 0, CAMERA_MODEL, True),
+        (42036, "s", 0, LENS_MODEL, True),
+    ]
+    write_tiff(ref_path, ref_arr, extratags=extratags)
+    ref_frame = Frame(ref_path)
+
+    result = average_frames(
+        frames, tmp_path / "out.tif", method="mean", reference_frame=ref_frame
+    )
+    assert result.metadata.camera_make == CAMERA_MAKE
+    assert result.metadata.camera_model == CAMERA_MODEL
+    assert result.metadata.lens_model == LENS_MODEL
+
+
+def test_band_height_none_full_image(tmp_path: Path) -> None:
+    """band_height=None processes the entire image at once."""
+    rng = np.random.default_rng(42)
+    frames = []
+    for i in range(5):
+        arr = rng.integers(0, 255, (30, 40), dtype=np.uint8)
+        p = write_gray_tiff(tmp_path / f"f_{i}.tif", arr)
+        frames.append(Frame(p))
+
+    full = average_frames(
+        frames, tmp_path / "full.tif", method="median", band_height=None
+    )
+    banded = average_frames(
+        frames, tmp_path / "banded.tif", method="median", band_height=7
+    )
+    np.testing.assert_array_equal(full.array, banded.array)
+
+
+def test_sigma_clip_identical_frames(tmp_path: Path) -> None:
+    """Sigma-clipped mean of identical frames returns the input value."""
+    frames = []
+    for i in range(5):
+        arr = np.full((24, 32), fill_value=150, dtype=np.uint16)
+        p = write_gray_tiff(tmp_path / f"same_{i}.tif", arr)
+        frames.append(Frame(p))
+
+    result = average_frames(frames, tmp_path / "out.tif", method="sigma_clip")
+    np.testing.assert_array_equal(result.array, 150)
+
+
+def test_output_creates_parent_directories(tmp_path: Path) -> None:
+    """average_frames creates missing parent directories for output."""
+    arr = np.full((24, 32), fill_value=100, dtype=np.uint16)
+    p = write_gray_tiff(tmp_path / "f.tif", arr)
+    dest = tmp_path / "nested" / "deep" / "out.tif"
+    result = average_frames([Frame(p)], dest, method="mean")
+    assert result.path == dest
+    assert dest.exists()

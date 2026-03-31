@@ -17,10 +17,10 @@ DEFAULT_BAND_HEIGHT = 256
 def average_frames(
     frames: list[Frame],
     output_path: str | Path,
-    method: str = "median",
+    method: str = "sigma_clip",
     *,
     reference_frame: Frame | None = None,
-    band_height: int | None = None,
+    band_height: int | None = DEFAULT_BAND_HEIGHT,
 ) -> Frame:
     """Average a list of frames into a single output frame.
 
@@ -36,7 +36,7 @@ def average_frames(
         reference_frame: Optional frame whose EXIF metadata is
             inherited by the output file.
         band_height: Number of rows to process per band.  When
-            ``None`` (the default) the entire array is averaged at
+            ``None``, the entire array is averaged at
             once.
 
     Returns:
@@ -72,7 +72,7 @@ def average_frames(
             raise ValueError(msg)
 
     height, width = ref.shape[0], ref.shape[1]
-    target = Path(output_path)
+    target = Path(output_path).expanduser()
     target.parent.mkdir(parents=True, exist_ok=True)
 
     if band_height is None:
@@ -82,8 +82,7 @@ def average_frames(
     for y_start in range(0, height, band_height):
         y_end = min(y_start + band_height, height)
         band_slices = [
-            f.read_tile(0, y_start, width, y_end, unload_array=True)
-            for f in frames
+            f.read_tile(0, y_start, width, y_end, unload_array=True) for f in frames
         ]
         stack = np.stack(band_slices, axis=0)
         result_bands.append(combine(stack))
