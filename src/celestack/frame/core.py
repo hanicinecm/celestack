@@ -8,10 +8,9 @@ from pathlib import Path
 import numpy as np
 import plotly.graph_objects as go
 import tifffile
-import zarr
 
-from celestack.exceptions import DownscaleError, TileReadError
-from celestack.frame._backends import Backend, TiffBackend, backend_types
+from celestack.exceptions import DownscaleError
+from celestack.frame._backends import get_backends, is_tiff_path
 from celestack.frame._constants import CELESTACK_KEY, DEFAULT_TILE_SIZE
 from celestack.frame._image_ops import (
     convert_bit_depth,
@@ -46,11 +45,16 @@ class Frame:
             raise FileNotFoundError(msg)
 
         self._path = resolved
-        self._backend = self._resolve_backend(self._path)
+        backends = get_backends()
+        suffix = self._path.suffix.lower()
+        if suffix not in backends:
+            msg = f"No backend found for: {self._path.suffix}"
+            raise ValueError(msg)
+        self._backend = backends[suffix]
         info = self._backend.inspect(self._path)
         self._shape = info.shape
+        self._dtype = info.dtype
         self._bit_depth = info.bit_depth
-        self._is_tiled = info.is_tiled
 
         celestack = info.celestack_metadata
         self._downscale_factor = celestack.downscale_factor
@@ -59,19 +63,20 @@ class Frame:
         self._metadata = extract_exif_metadata(self._path)
         self._array_cache: np.ndarray | None = None
 
-    @staticmethod
-    def _resolve_backend(path: Path) -> Backend:
-        """Select a parser backend based on the input file path."""
-        for backend_type in backend_types():
-            if backend_type.can_handle(path):
-                return backend_type()
-        msg = f"No backend found for: {path.suffix}"
-        raise ValueError(msg)
-
     @property
     def path(self) -> Path:
         """Return the on-disk path represented by this frame."""
         return self._path
+
+    @property
+    def shape(self) -> tuple[int, ...]:
+        """Return the image dimensions discovered during inspection."""
+        return self._shape
+
+    @property
+    def dtype(self) -> np.dtype:
+        """Return the pixel data type discovered during inspection."""
+        return self._dtype
 
     @property
     def bit_depth(self) -> int:
@@ -87,11 +92,6 @@ class Frame:
     def metadata(self) -> ExifMetadata:
         """Return the extracted EXIF metadata."""
         return self._metadata
-
-    @property
-    def is_tiled(self) -> bool:
-        """Return whether the underlying TIFF is stored in tiled layout."""
-        return self._is_tiled
 
     @property
     def timestamp(self) -> float | None:
@@ -123,15 +123,21 @@ class Frame:
         strip-layout TIFFs with EXIF metadata preserved.
 
         Args:
-            path: Destination file path.
+            path: Destination file path (.tif or .tiff).
 
         Returns:
             A new frame bound to the saved path.
+
+        Raises:
+            ValueError: If *path* does not have a TIFF extension.
         """
         target = Path(path)
+        if not is_tiff_path(target):
+            msg = f"Output path must be a TIFF file, got: {target.suffix!r}"
+            raise ValueError(msg)
         target.parent.mkdir(parents=True, exist_ok=True)
 
-        if TiffBackend.can_handle(self.path):
+        if is_tiff_path(self.path):
             shutil.copy2(self.path, target)
             return Frame(target)
 
@@ -160,7 +166,7 @@ class Frame:
         """Write a downscaled TIFF proxy and return it as a Frame.
 
         Args:
-            path: Destination path for the proxy frame.
+            path: Destination path for the proxy frame (.tif or .tiff).
             downscale_factor: Integer linear downscale factor.
             bit_depth: Target output bit depth.
             grayscale: Whether to convert RGB input to grayscale.
@@ -170,8 +176,14 @@ class Frame:
 
         Raises:
             DownscaleError: If called on a frame that is already downscaled.
-            ValueError: If the downscale factor is invalid or timestamp is missing.
+            ValueError: If the downscale factor is invalid, timestamp is
+                missing, or *path* does not have a TIFF extension.
         """
+        target = Path(path)
+        if not is_tiff_path(target):
+            msg = f"Output path must be a TIFF file, got: {target.suffix!r}"
+            raise ValueError(msg)
+
         if self.downscale_factor != 1:
             msg = "Cannot downscale a proxy frame"
             raise DownscaleError(msg)
@@ -184,7 +196,6 @@ class Frame:
             msg = "save_downscaled requires a non-None timestamp"
             raise ValueError(msg)
 
-        target = Path(path)
         target.parent.mkdir(parents=True, exist_ok=True)
 
         working = self.array
@@ -215,46 +226,46 @@ class Frame:
         )
         return Frame(target)
 
-    def read_tile(self, x: int, y: int, width: int, height: int) -> np.ndarray:
+    def read_tile(
+        self,
+        x0: int,
+        y0: int,
+        x1: int,
+        y1: int,
+        *,
+        unload_array: bool = False,
+    ) -> np.ndarray:
         """Read a rectangular region from the image.
 
-        Uses zarr-backed slicing for efficient partial reads on any TIFF
-        layout (tiled or strip).
-
         Args:
-            x: Left pixel coordinate.
-            y: Top pixel coordinate.
-            width: Region width in pixels.
-            height: Region height in pixels.
+            x0: Left pixel coordinate.
+            y0: Top pixel coordinate.
+            x1: Right pixel coordinate (exclusive).
+            y1: Bottom pixel coordinate (exclusive).
+            unload_array: Drop cached array after slicing.
 
         Returns:
             Pixel data for the requested region.
 
         Raises:
             ValueError: If bounds are invalid or outside image extents.
-            TileReadError: If the file is not a TIFF.
         """
-        if width <= 0 or height <= 0:
-            msg = "width and height must be positive"
+        if x1 <= x0 or y1 <= y0:
+            msg = "x1 must be greater than x0 and y1 must be greater than y0"
             raise ValueError(msg)
-        if x < 0 or y < 0:
-            msg = "x and y must be non-negative"
+        if x0 < 0 or y0 < 0:
+            msg = "x0 and y0 must be non-negative"
             raise ValueError(msg)
 
         h, w = self._shape[:2]
-        if x + width > w or y + height > h:
+        if x1 > w or y1 > h:
             msg = "Requested tile is outside frame bounds"
             raise ValueError(msg)
 
-        if not TiffBackend.can_handle(self.path):
-            msg = "Tile reading is available only for TIFF files"
-            raise TileReadError(msg)
+        tile = self.array[y0:y1, x0:x1].copy()
+        if unload_array:
+            self.unload()
 
-        with tifffile.TiffFile(self.path) as tif:
-            store = tif.aszarr()
-            z = zarr.open_array(store, mode="r")
-            tile = np.asarray(z[y : y + height, x : x + width])
-            store.close()
         return tile
 
     def plot(self, *, show_pixels: bool = False) -> go.Figure:

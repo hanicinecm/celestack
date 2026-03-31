@@ -19,10 +19,7 @@ from celestack.frame._metadata import (
 class Backend(Protocol):
     """Protocol for image format backends."""
 
-    @classmethod
-    def can_handle(cls, path: Path) -> bool:
-        """Return whether this backend can open the given path."""
-        ...
+    SUFFIXES: frozenset[str]
 
     def inspect(self, path: Path) -> FrameInfo:
         """Inspect basic frame characteristics without loading full pixels."""
@@ -38,11 +35,6 @@ class TiffBackend:
 
     SUFFIXES = frozenset({".tif", ".tiff"})
 
-    @classmethod
-    def can_handle(cls, path: Path) -> bool:
-        """Return whether the file extension is TIFF-like."""
-        return path.suffix.lower() in cls.SUFFIXES
-
     def inspect(self, path: Path) -> FrameInfo:
         """Read TIFF page metadata used by Frame initialization."""
         with tifffile.TiffFile(path) as tif:
@@ -57,8 +49,8 @@ class TiffBackend:
                 bit_depth = np.dtype(page.dtype).itemsize * 8
             info = FrameInfo(
                 bit_depth=int(bit_depth),
+                dtype=np.dtype(page.dtype),
                 shape=tuple(int(v) for v in page.shape),
-                is_tiled=bool(page.is_tiled),
                 celestack_metadata=parse_celestack_metadata(page),
             )
         return info
@@ -72,6 +64,7 @@ class PillowBackend:
     """Backend for Pillow-supported non-TIFF formats."""
 
     SUFFIXES = frozenset({".jpg", ".jpeg", ".png"})
+
     MODE_BIT_DEPTH = {
         "1": 1,
         "L": 8,
@@ -90,24 +83,20 @@ class PillowBackend:
         "F": 32,
     }
 
-    @classmethod
-    def can_handle(cls, path: Path) -> bool:
-        """Return whether the file extension is handled by Pillow backend."""
-        return path.suffix.lower() in cls.SUFFIXES
-
     def inspect(self, path: Path) -> FrameInfo:
         """Read image mode and shape metadata via Pillow."""
         with Image.open(path) as image:
             width, height = image.size
             bands = len(image.getbands())
             shape = (height, width) if bands == 1 else (height, width, bands)
+            arr = np.asarray(image)
             bit_depth = self.MODE_BIT_DEPTH.get(image.mode)
             if bit_depth is None:
-                bit_depth = np.asarray(image).dtype.itemsize * 8
+                bit_depth = arr.dtype.itemsize * 8
             return FrameInfo(
                 bit_depth=bit_depth,
+                dtype=arr.dtype,
                 shape=shape,
-                is_tiled=False,
                 celestack_metadata=CelestackMetadata(),
             )
 
@@ -117,6 +106,19 @@ class PillowBackend:
             return np.asarray(image)
 
 
-def backend_types() -> tuple[type[Backend], ...]:
-    """Return available backend classes in resolution order."""
-    return (TiffBackend, PillowBackend)
+def is_tiff_path(path: Path) -> bool:
+    """Return True if the path has a TIFF file extension."""
+    return path.suffix.lower() in TiffBackend.SUFFIXES
+
+
+def get_backends() -> dict[str, Backend]:
+    """Return a mapping from file suffix to backend instance."""
+    backends: dict[str, Backend] = {}
+    for cls in (TiffBackend, PillowBackend):
+        instance = cls()
+        for suffix in cls.SUFFIXES:
+            if suffix in backends:
+                msg = f"Duplicate backend for suffix: {suffix}"
+                raise ValueError(msg)
+            backends[suffix] = instance
+    return backends
