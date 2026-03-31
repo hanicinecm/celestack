@@ -15,7 +15,6 @@ dependencies = [
     "plotly>=6.6.0",
     "polars>=1.39.3",
     "tifffile>=2026.3.3",
-    "zarr>=3.1.6",
 ]
 
 [build-system]

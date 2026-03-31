@@ -19,7 +19,7 @@ LENS_MODEL = "TestLens 24mm f/1.4"
 IMG_W, IMG_H = 64, 48
 
 
-def _write_tiled_tiff(
+def _write_tiff(
     path: Path,
     array: np.ndarray,
     *,
@@ -28,13 +28,11 @@ def _write_tiled_tiff(
     extratags: list | None = None,
     metadata: dict | None = None,
 ) -> Path:
-    """Write a tiled TIFF with optional EXIF and Celestack metadata."""
+    """Write a TIFF with optional EXIF and Celestack metadata."""
     tags = extratags or []
     tifffile.imwrite(
         path,
         data=array,
-        tile=(DEFAULT_TILE_SIZE, DEFAULT_TILE_SIZE),
-        compression="zlib",
         photometric=photometric,
         datetime=datetime_str,
         extratags=tags,
@@ -45,7 +43,7 @@ def _write_tiled_tiff(
 
 @pytest.fixture()
 def tmp_rgb_tiff(tmp_path: Path) -> Path:
-    """64x48 RGB 16-bit tiled TIFF with EXIF datetime and camera model."""
+    """64x48 RGB 16-bit TIFF with EXIF datetime and camera model."""
     array = np.random.default_rng(42).integers(
         0, 65535, (IMG_H, IMG_W, 3), dtype=np.uint16
     )
@@ -59,17 +57,17 @@ def tmp_rgb_tiff(tmp_path: Path) -> Path:
         (37386, "2I", 1, (24, 1), True),
         (42036, "s", 0, LENS_MODEL, True),
     ]
-    return _write_tiled_tiff(path, array, extratags=extratags)
+    return _write_tiff(path, array, extratags=extratags)
 
 
 @pytest.fixture()
 def tmp_gray_tiff(tmp_path: Path) -> Path:
-    """64x48 grayscale 16-bit tiled TIFF."""
+    """64x48 grayscale 16-bit TIFF."""
     array = np.random.default_rng(43).integers(
         0, 65535, (IMG_H, IMG_W), dtype=np.uint16
     )
     path = tmp_path / "gray.tif"
-    return _write_tiled_tiff(path, array, photometric="minisblack")
+    return _write_tiff(path, array, photometric="minisblack")
 
 
 @pytest.fixture()
@@ -109,27 +107,33 @@ def tmp_no_metadata_tiff(tmp_path: Path) -> Path:
         0, 65535, (IMG_H, IMG_W), dtype=np.uint16
     )
     path = tmp_path / "no_meta.tif"
-    return _write_tiled_tiff(path, array, photometric="minisblack", datetime_str=None)
+    return _write_tiff(path, array, photometric="minisblack", datetime_str=None)
 
 
 @pytest.fixture()
-def tmp_non_tiled_tiff(tmp_path: Path) -> Path:
-    """Strip-layout (non-tiled) TIFF."""
+def tmp_tiled_tiff(tmp_path: Path) -> Path:
+    """Tiled TIFF with tile-based layout."""
     array = np.random.default_rng(46).integers(
         0, 65535, (IMG_H, IMG_W), dtype=np.uint16
     )
-    path = tmp_path / "non_tiled.tif"
-    tifffile.imwrite(path, data=array, photometric="minisblack")
+    path = tmp_path / "tiled.tif"
+    tifffile.imwrite(
+        path,
+        data=array,
+        tile=(DEFAULT_TILE_SIZE, DEFAULT_TILE_SIZE),
+        compression="zlib",
+        photometric="minisblack",
+    )
     return path
 
 
 @pytest.fixture()
 def tmp_bool_mask_tiff(tmp_path: Path) -> Path:
-    """Boolean mask saved as a tiled TIFF."""
+    """Boolean mask saved as a TIFF."""
     rng = np.random.default_rng(47)
     array = rng.choice([True, False], size=(IMG_H, IMG_W))
     path = tmp_path / "mask.tif"
-    return _write_tiled_tiff(path, array.astype(np.uint8), photometric="minisblack")
+    return _write_tiff(path, array.astype(np.uint8), photometric="minisblack")
 
 
 @pytest.fixture()
@@ -145,7 +149,7 @@ def tmp_celestack_tiff(tmp_path: Path) -> Path:
             "timestamp": 1752620400.0,
         }
     }
-    return _write_tiled_tiff(
+    return _write_tiff(
         path,
         array,
         photometric="minisblack",

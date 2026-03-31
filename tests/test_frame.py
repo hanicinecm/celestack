@@ -6,7 +6,7 @@ import numpy as np
 import plotly.graph_objects as go
 import pytest
 
-from celestack.exceptions import DownscaleError, TileReadError
+from celestack.exceptions import DownscaleError
 from celestack.frame import Frame
 
 from conftest import (
@@ -174,16 +174,12 @@ def test_save_returns_frame(tmp_rgb_tiff: Path, tmp_path: Path) -> None:
     assert saved.path == tmp_path / "saved.tif"
 
 
-def test_save_copies_non_tiled_tiff_verbatim(
-    tmp_non_tiled_tiff: Path, tmp_path: Path
-) -> None:
-    """Non-tiled TIFF is copied as-is, preserving strip layout."""
-    frame = Frame(tmp_non_tiled_tiff)
-    assert not frame.is_tiled
+def test_save_copies_tiff_verbatim(tmp_gray_tiff: Path, tmp_path: Path) -> None:
+    """TIFF is copied as-is (byte-identical)."""
+    frame = Frame(tmp_gray_tiff)
     dest = tmp_path / "copied.tif"
-    saved = frame.save(dest)
-    assert not saved.is_tiled
-    assert tmp_non_tiled_tiff.read_bytes() == dest.read_bytes()
+    frame.save(dest)
+    assert tmp_gray_tiff.read_bytes() == dest.read_bytes()
 
 
 def test_save_preserves_array_data(tmp_rgb_tiff: Path, tmp_path: Path) -> None:
@@ -225,13 +221,12 @@ def test_save_does_not_embed_celestack_metadata(
     assert saved.downscale_factor == 1
 
 
-def test_save_copies_tiled_tiff(tmp_rgb_tiff: Path, tmp_path: Path) -> None:
-    """Already-tiled TIFF is copied verbatim, not re-encoded."""
-    frame = Frame(tmp_rgb_tiff)
-    assert frame.is_tiled
+def test_save_copies_tiled_tiff(tmp_tiled_tiff: Path, tmp_path: Path) -> None:
+    """Tiled TIFF is copied verbatim, not re-encoded."""
+    frame = Frame(tmp_tiled_tiff)
     dest = tmp_path / "copied.tif"
     frame.save(dest)
-    assert tmp_rgb_tiff.read_bytes() == dest.read_bytes()
+    assert tmp_tiled_tiff.read_bytes() == dest.read_bytes()
 
 
 # --- Downscale ---
@@ -323,24 +318,6 @@ def test_save_downscaled_no_timestamp_raises(
         frame.save_downscaled(tmp_path / "proxy.tif", downscale_factor=2)
 
 
-# --- Tiled layout detection ---
-
-
-def test_is_tiled_tiff(tmp_rgb_tiff: Path) -> None:
-    """Tiled TIFF returns True."""
-    assert Frame(tmp_rgb_tiff).is_tiled is True
-
-
-def test_is_tiled_non_tiled_tiff(tmp_non_tiled_tiff: Path) -> None:
-    """Strip-layout TIFF returns False."""
-    assert Frame(tmp_non_tiled_tiff).is_tiled is False
-
-
-def test_is_tiled_non_tiff(tmp_rgb_jpeg: Path) -> None:
-    """JPEG returns False."""
-    assert Frame(tmp_rgb_jpeg).is_tiled is False
-
-
 # --- Tile reading ---
 
 
@@ -348,23 +325,16 @@ def test_read_tile_correct_region(tmp_rgb_tiff: Path) -> None:
     """Tile read returns the same data as slicing the full array."""
     frame = Frame(tmp_rgb_tiff)
     full = frame.array
-    tile = frame.read_tile(10, 5, 20, 15)
+    tile = frame.read_tile(10, 5, 30, 20)
     np.testing.assert_array_equal(tile, full[5:20, 10:30])
 
 
-def test_read_tile_non_tiled_tiff(tmp_non_tiled_tiff: Path) -> None:
-    """Non-tiled (strip) TIFF supports tile reading via zarr."""
-    frame = Frame(tmp_non_tiled_tiff)
+def test_read_tile_grayscale_tiff(tmp_gray_tiff: Path) -> None:
+    """Grayscale TIFF supports tile reading."""
+    frame = Frame(tmp_gray_tiff)
     full = frame.array
     tile = frame.read_tile(0, 0, 16, 16)
     np.testing.assert_array_equal(tile, full[0:16, 0:16])
-
-
-def test_read_tile_non_tiff_raises(tmp_rgb_jpeg: Path) -> None:
-    """JPEG raises TileReadError."""
-    frame = Frame(tmp_rgb_jpeg)
-    with pytest.raises(TileReadError, match="TIFF"):
-        frame.read_tile(0, 0, 10, 10)
 
 
 def test_read_tile_out_of_bounds_raises(tmp_rgb_tiff: Path) -> None:
