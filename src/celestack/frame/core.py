@@ -25,7 +25,7 @@ from celestack.frame._metadata import (
     extract_exif_metadata,
     parse_datetime_to_epoch,
 )
-from celestack.frame._plotting import as_png_data_uri
+from celestack.frame._plotting import plot_frame
 
 
 class Frame:
@@ -261,43 +261,22 @@ class Frame:
         )
         return self.array[y : y + height, x : x + width]
 
-    def plot(self) -> go.Figure:
+    def plot(self, *, show_pixels: bool = False) -> go.Figure:
         """Create a Plotly figure with the frame as a background image.
+
+        Args:
+            show_pixels: Whether to plot with pixel hover data.
 
         Returns:
             A figure with axes in full-resolution pixel coordinates.
         """
-        array = self.array
-        proxy_h, proxy_w = array.shape[:2]
-        full_h = proxy_h * self.downscale_factor
-        full_w = proxy_w * self.downscale_factor
-
-        fig = go.Figure()
-        fig.add_layout_image(
-            dict(
-                source=as_png_data_uri(array),
-                xref="x",
-                yref="y",
-                x=0,
-                y=0,
-                sizex=full_w,
-                sizey=full_h,
-                sizing="stretch",
-                layer="below",
-            )
-        )
-        fig.update_layout(
+        return plot_frame(
+            self.array,
             title=self.path.name,
-            xaxis=dict(range=[0, full_w], showgrid=False, zeroline=False),
-            yaxis=dict(
-                range=[full_h, 0],
-                showgrid=False,
-                zeroline=False,
-                scaleanchor="x",
-            ),
-            margin=dict(l=0, r=0, t=30, b=0),
+            bit_depth=self.bit_depth,
+            downscale_factor=self.downscale_factor,
+            show_pixels=show_pixels,
         )
-        return fig
 
     def __repr__(self) -> str:
         """Return a concise debug representation of the frame."""

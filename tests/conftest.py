@@ -13,7 +13,9 @@ from celestack.frame._constants import CELESTACK_KEY, DEFAULT_TILE_SIZE
 
 EXIF_DATETIME = "2025:07:15 23:30:00"
 EXIF_DATETIME_EPOCH = datetime.strptime(EXIF_DATETIME, "%Y:%m:%d %H:%M:%S").timestamp()
+CAMERA_MAKE = "TestCorp"
 CAMERA_MODEL = "TestCam X100"
+LENS_MODEL = "TestLens 24mm f/1.4"
 IMG_W, IMG_H = 64, 48
 
 
@@ -48,7 +50,15 @@ def tmp_rgb_tiff(tmp_path: Path) -> Path:
         0, 65535, (IMG_H, IMG_W, 3), dtype=np.uint16
     )
     path = tmp_path / "rgb.tif"
-    extratags = [(272, "s", 0, CAMERA_MODEL, True)]
+    extratags = [
+        (271, "s", 0, CAMERA_MAKE, True),
+        (272, "s", 0, CAMERA_MODEL, True),
+        (33434, "2I", 1, (30, 1), True),
+        (33437, "2I", 1, (14, 10), True),
+        (34855, "H", 1, 1600, True),
+        (37386, "2I", 1, (24, 1), True),
+        (42036, "s", 0, LENS_MODEL, True),
+    ]
     return _write_tiled_tiff(path, array, extratags=extratags)
 
 
@@ -74,12 +84,18 @@ def tmp_rgb_jpeg(tmp_path: Path) -> Path:
     img = Image.fromarray(array, mode="RGB")
 
     exif_dict = {
-        "0th": {piexif.ImageIFD.Model: CAMERA_MODEL.encode()},
+        "0th": {
+            piexif.ImageIFD.Make: CAMERA_MAKE.encode(),
+            piexif.ImageIFD.Model: CAMERA_MODEL.encode(),
+        },
         "Exif": {
             piexif.ExifIFD.DateTimeOriginal: EXIF_DATETIME.encode(),
-            piexif.ExifIFD.ISOSpeedRatings: 1600,
             piexif.ExifIFD.ExposureTime: (30, 1),
+            piexif.ExifIFD.FNumber: (14, 10),
+            piexif.ExifIFD.ISOSpeedRatings: 1600,
+
             piexif.ExifIFD.FocalLength: (24, 1),
+            piexif.ExifIFD.LensModel: LENS_MODEL.encode(),
         },
     }
     exif_bytes = piexif.dump(exif_dict)

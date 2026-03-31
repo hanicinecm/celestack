@@ -10,7 +10,14 @@ import pytest
 from celestack.exceptions import DownscaleError, TileReadError
 from celestack.frame import Frame
 
-from conftest import CAMERA_MODEL, EXIF_DATETIME_EPOCH, IMG_H, IMG_W
+from conftest import (
+    CAMERA_MAKE,
+    CAMERA_MODEL,
+    EXIF_DATETIME_EPOCH,
+    IMG_H,
+    IMG_W,
+    LENS_MODEL,
+)
 
 
 # --- Constructor + metadata ---
@@ -22,6 +29,7 @@ def test_load_rgb_tiff(tmp_rgb_tiff: Path) -> None:
     assert frame.path == tmp_rgb_tiff
     assert frame.downscale_factor == 1
     assert frame.bit_depth == 16
+    assert frame.metadata.camera_make == CAMERA_MAKE
     assert frame.metadata.camera_model == CAMERA_MODEL
 
 
@@ -56,10 +64,13 @@ def test_no_metadata_timestamp_is_none(tmp_no_metadata_tiff: Path) -> None:
 def test_optional_metadata_missing(tmp_no_metadata_tiff: Path) -> None:
     """Missing EXIF fields default to None."""
     frame = Frame(tmp_no_metadata_tiff)
+    assert frame.metadata.camera_make is None
     assert frame.metadata.camera_model is None
     assert frame.metadata.exposure is None
+    assert frame.metadata.f_number is None
     assert frame.metadata.iso is None
     assert frame.metadata.focal_length is None
+    assert frame.metadata.lens_model is None
 
 
 def test_unsupported_suffix_raises(tmp_path: Path) -> None:
@@ -192,11 +203,14 @@ def test_save_preserves_all_exif_fields(tmp_rgb_jpeg: Path, tmp_path: Path) -> N
     """All EXIF fields round-trip through save()."""
     frame = Frame(tmp_rgb_jpeg)
     saved = frame.save(tmp_path / "saved.tif")
+    assert saved.metadata.camera_make == CAMERA_MAKE
     assert saved.metadata.camera_model == CAMERA_MODEL
     assert saved.metadata.datetime is not None
     assert saved.metadata.exposure is not None
+    assert saved.metadata.f_number is not None
     assert saved.metadata.iso is not None
     assert saved.metadata.focal_length is not None
+    assert saved.metadata.lens_model == LENS_MODEL
 
 
 def test_save_does_not_embed_celestack_metadata(
@@ -286,11 +300,14 @@ def test_save_downscaled_preserves_exif_metadata(
     """EXIF metadata survives a downscale round-trip."""
     frame = Frame(tmp_rgb_jpeg)
     proxy = frame.save_downscaled(tmp_path / "proxy.tif", downscale_factor=2)
+    assert proxy.metadata.camera_make == CAMERA_MAKE
     assert proxy.metadata.camera_model == CAMERA_MODEL
     assert proxy.metadata.datetime is not None
     assert proxy.metadata.exposure is not None
+    assert proxy.metadata.f_number is not None
     assert proxy.metadata.iso is not None
     assert proxy.metadata.focal_length is not None
+    assert proxy.metadata.lens_model == LENS_MODEL
 
 
 def test_save_downscaled_no_timestamp_raises(
