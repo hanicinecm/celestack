@@ -672,6 +672,99 @@ def test_plot_show_pixels_rgb(tmp_rgb_tiff: Path) -> None:
     assert isinstance(fig.data[0], go.Image)
 
 
+# --- Cache conservation ---
+
+
+def test_save_conserves_unloaded_cache(tmp_rgb_jpeg: Path, tmp_path: Path) -> None:
+    """save() does not leave the array cached when it was not loaded before."""
+    frame = Frame(tmp_rgb_jpeg)
+    assert frame._array_cache is None
+    frame.save(tmp_path / "out.tif")
+    assert frame._array_cache is None
+
+
+def test_save_conserves_loaded_cache(tmp_rgb_jpeg: Path, tmp_path: Path) -> None:
+    """save() keeps the array cached when it was already loaded."""
+    frame = Frame(tmp_rgb_jpeg)
+    _ = frame.array
+    assert frame._array_cache is not None
+    frame.save(tmp_path / "out.tif")
+    assert frame._array_cache is not None
+
+
+def test_save_downscaled_conserves_unloaded_cache(
+    tmp_rgb_tiff: Path, tmp_path: Path
+) -> None:
+    """save_downscaled() does not leave the array cached when unloaded."""
+    frame = Frame(tmp_rgb_tiff)
+    assert frame._array_cache is None
+    frame.save_downscaled(tmp_path / "proxy.tif", downscale_factor=2)
+    assert frame._array_cache is None
+
+
+def test_save_downscaled_conserves_loaded_cache(
+    tmp_rgb_tiff: Path, tmp_path: Path
+) -> None:
+    """save_downscaled() keeps the array cached when already loaded."""
+    frame = Frame(tmp_rgb_tiff)
+    _ = frame.array
+    assert frame._array_cache is not None
+    frame.save_downscaled(tmp_path / "proxy.tif", downscale_factor=2)
+    assert frame._array_cache is not None
+
+
+def test_sub_conserves_unloaded_cache(tmp_path: Path) -> None:
+    """Subtraction does not leave arrays cached on either operand."""
+    from tests.utils import write_gray_tiff
+
+    left = Frame(
+        write_gray_tiff(tmp_path / "l.tif", np.full((24, 32), 100, dtype=np.uint16))
+    )
+    right = Frame(
+        write_gray_tiff(tmp_path / "r.tif", np.full((24, 32), 10, dtype=np.uint16))
+    )
+    assert left._array_cache is None
+    assert right._array_cache is None
+    _ = left - right
+    assert left._array_cache is None
+    assert right._array_cache is None
+
+
+def test_sub_conserves_loaded_cache(tmp_path: Path) -> None:
+    """Subtraction keeps arrays cached on operands that were already loaded."""
+    from tests.utils import write_gray_tiff
+
+    left = Frame(
+        write_gray_tiff(tmp_path / "l.tif", np.full((24, 32), 100, dtype=np.uint16))
+    )
+    right = Frame(
+        write_gray_tiff(tmp_path / "r.tif", np.full((24, 32), 10, dtype=np.uint16))
+    )
+    _ = left.array
+    assert left._array_cache is not None
+    assert right._array_cache is None
+    _ = left - right
+    assert left._array_cache is not None
+    assert right._array_cache is None
+
+
+def test_plot_conserves_unloaded_cache(tmp_rgb_tiff: Path) -> None:
+    """plot() does not leave the array cached when it was not loaded before."""
+    frame = Frame(tmp_rgb_tiff)
+    assert frame._array_cache is None
+    frame.plot()
+    assert frame._array_cache is None
+
+
+def test_plot_conserves_loaded_cache(tmp_rgb_tiff: Path) -> None:
+    """plot() keeps the array cached when it was already loaded."""
+    frame = Frame(tmp_rgb_tiff)
+    _ = frame.array
+    assert frame._array_cache is not None
+    frame.plot()
+    assert frame._array_cache is not None
+
+
 # --- Repr ---
 
 

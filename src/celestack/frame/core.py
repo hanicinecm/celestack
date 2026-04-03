@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import shutil
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 import numpy as np
@@ -136,11 +138,26 @@ class Frame:
         """Drop any cached pixel array to free memory."""
         self._array_cache = None
 
+    @contextmanager
+    def _conserve_cache(self) -> Iterator[None]:
+        """Restore the array cache to its prior state on exit.
+
+        If the pixel data was not loaded before entering the block,
+        it is unloaded when the block exits.
+        """
+        was_loaded = self._array_cache is not None
+        yield
+        if not was_loaded:
+            self.unload()
+
     def save(self, path: str | Path) -> Frame:
         """Save the frame as a TIFF and return the saved Frame.
 
         Existing TIFF sources are copied verbatim. Non-TIFF or detached sources are
         written as strip-layout TIFFs with EXIF metadata preserved.
+
+        The array cache is conserved: if the pixel data was not loaded
+        before the call, it is unloaded afterwards.
 
         Args:
             path: Destination file path (.tif or .tiff).
@@ -161,30 +178,39 @@ class Frame:
             shutil.copy2(self.path, target)
             return Frame(target)
 
-        array = self.array
-        photometric = "rgb" if array.ndim == 3 and array.shape[2] >= 3 else "minisblack"
-        datetime_value = self._metadata.datetime
-        tifffile.imwrite(
-            target,
-            data=array,
-            compression="zlib",
-            photometric=photometric,
-            metadata=None,
-            datetime=str(datetime_value) if datetime_value else None,
-            extratags=build_tiff_extratags(self._metadata),
-        )
+        with self._conserve_cache():
+            array = self.array
+            photometric = (
+                "rgb" if array.ndim == 3 and array.shape[2] >= 3 else "minisblack"
+            )
+            datetime_value = self._metadata.datetime
+            tifffile.imwrite(
+                target,
+                data=array,
+                compression="zlib",
+                photometric=photometric,
+                metadata=None,
+                datetime=str(datetime_value) if datetime_value else None,
+                extratags=build_tiff_extratags(self._metadata),
+            )
         return Frame(target)
 
     def __sub__(self, other: object) -> Frame:
-        """Return an in-memory frame produced by pixel-wise subtraction."""
+        """Return an in-memory frame produced by pixel-wise subtraction.
+
+        The array cache is conserved on both operands: if the pixel data
+        was not loaded before the call, it is unloaded afterwards.
+        """
         if not isinstance(other, Frame):
             return NotImplemented
 
         self._validate_similarity(other)
-        result = self._detached_copy()
-        result._array_cache = subtract_arrays(self.array, other.array)
-        result._shape = tuple(int(v) for v in result._array_cache.shape)
-        result._dtype = np.dtype(result._array_cache.dtype)
+        with self._conserve_cache(), other._conserve_cache():
+            result = self._detached_copy()
+            result._array_cache = subtract_arrays(self.array, other.array)
+            result._shape = tuple(int(v) for v in result._array_cache.shape)
+            result._dtype = np.dtype(result._array_cache.dtype)
+
         return result
 
     def _validate_similarity(self, other: Frame) -> None:
@@ -228,6 +254,9 @@ class Frame:
     ) -> Frame:
         """Write a downscaled TIFF proxy and return it as a Frame.
 
+        The array cache is conserved: if the pixel data was not loaded
+        before the call, it is unloaded afterwards.
+
         Args:
             path: Destination path for the proxy frame (.tif or .tiff).
             downscale_factor: Integer linear downscale factor.
@@ -261,31 +290,37 @@ class Frame:
 
         target.parent.mkdir(parents=True, exist_ok=True)
 
-        working = self.array
-        if grayscale:
-            working = to_grayscale(working)
+        with self._conserve_cache():
+            working = self.array
+            if grayscale:
+                working = to_grayscale(working)
 
-        downscaled = downscale_by_block_average(working, downscale_factor)
-        converted = convert_bit_depth(downscaled, self.bit_depth, bit_depth)
+            downscaled = downscale_by_block_average(working, downscale_factor)
+            converted = convert_bit_depth(downscaled, self.bit_depth, bit_depth)
 
-        photometric = (
-            "rgb" if converted.ndim == 3 and converted.shape[2] >= 3 else "minisblack"
-        )
-        metadata = {
-            CELESTACK_KEY: {
-                "downscale_factor": int(downscale_factor),
-                "timestamp": float(timestamp),
+            photometric = (
+                "rgb"
+                if converted.ndim == 3 and converted.shape[2] >= 3
+                else "minisblack"
+            )
+            metadata = {
+                CELESTACK_KEY: {
+                    "downscale_factor": int(downscale_factor),
+                    "timestamp": float(timestamp),
+                }
             }
-        }
-        tifffile.imwrite(
-            target,
-            data=converted,
-            compression="zlib",
-            photometric=photometric,
-            metadata=metadata,
-            datetime=str(self._metadata.datetime) if self._metadata.datetime else None,
-            extratags=build_tiff_extratags(self._metadata),
-        )
+            tifffile.imwrite(
+                target,
+                data=converted,
+                compression="zlib",
+                photometric=photometric,
+                metadata=metadata,
+                datetime=(
+                    str(self._metadata.datetime) if self._metadata.datetime else None
+                ),
+                extratags=build_tiff_extratags(self._metadata),
+            )
+
         return Frame(target)
 
     def read_tile(
@@ -333,19 +368,24 @@ class Frame:
     def plot(self, *, show_pixels: bool = False) -> go.Figure:
         """Create a Plotly figure with the frame as a background image.
 
+        The array cache is conserved: if the pixel data was not loaded
+        before the call, it is unloaded afterwards.
+
         Args:
             show_pixels: Whether to plot with pixel hover data.
 
         Returns:
             A figure with axes in full-resolution pixel coordinates.
         """
-        return plot_frame(
-            self.array,
-            title=self.path.name if self.path is not None else "<memory>",
-            bit_depth=self.bit_depth,
-            downscale_factor=self.downscale_factor,
-            show_pixels=show_pixels,
-        )
+        with self._conserve_cache():
+            figure = plot_frame(
+                self.array,
+                title=self.path.name if self.path is not None else "<memory>",
+                bit_depth=self.bit_depth,
+                downscale_factor=self.downscale_factor,
+                show_pixels=show_pixels,
+            )
+        return figure
 
     def __repr__(self) -> str:
         """Return a concise debug representation of the frame."""
