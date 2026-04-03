@@ -90,7 +90,7 @@ def test_shape_mismatch_raises(tmp_path: Path) -> None:
     """Frames with different shapes raise ValueError."""
     a = write_gray_tiff(tmp_path / "a.tif", np.zeros((24, 32), dtype=np.uint16))
     b = write_gray_tiff(tmp_path / "b.tif", np.zeros((24, 48), dtype=np.uint16))
-    with pytest.raises(ValueError, match="Shape mismatch"):
+    with pytest.raises(ValueError, match=r"Shape mismatch: Frame\("):
         average_frames([Frame(a), Frame(b)], tmp_path / "out.tif")
 
 
@@ -118,7 +118,7 @@ def test_dtype_mismatch_raises(tmp_path: Path) -> None:
     """Frames with different dtypes raise ValueError."""
     a = write_gray_tiff(tmp_path / "a.tif", np.zeros((24, 32), dtype=np.uint16))
     b = write_gray_tiff(tmp_path / "b.tif", np.zeros((24, 32), dtype=np.uint8))
-    with pytest.raises(ValueError, match="Dtype mismatch"):
+    with pytest.raises(ValueError, match=r"Dtype mismatch: Frame\("):
         average_frames([Frame(a), Frame(b)], tmp_path / "out.tif")
 
 

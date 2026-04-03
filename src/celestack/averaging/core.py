@@ -10,6 +10,7 @@ import tifffile
 from celestack.averaging._methods import get_methods
 from celestack.frame._metadata import build_tiff_extratags
 from celestack.frame.core import Frame
+from celestack.progress import progress_factory
 
 DEFAULT_BAND_HEIGHT = 256
 
@@ -59,16 +60,10 @@ def average_frames(
     ref = frames[0]
     for f in frames[1:]:
         if f.shape != ref.shape:
-            msg = (
-                f"Shape mismatch: {f.path.name} has shape {f.shape}, "
-                f"expected {ref.shape}"
-            )
+            msg = f"Shape mismatch: {f!r} has shape {f.shape}, expected {ref.shape}"
             raise ValueError(msg)
         if f.dtype != ref.dtype:
-            msg = (
-                f"Dtype mismatch: {f.path.name} has dtype {f.dtype}, "
-                f"expected {ref.dtype}"
-            )
+            msg = f"Dtype mismatch: {f!r} has dtype {f.dtype}, expected {ref.dtype}"
             raise ValueError(msg)
 
     height, width = ref.shape[0], ref.shape[1]
@@ -78,6 +73,8 @@ def average_frames(
     if band_height is None:
         band_height = height
 
+    n_bands = (height + band_height - 1) // band_height
+    bar = progress_factory(n_bands, "Averaging")
     result_bands: list[np.ndarray] = []
     for y_start in range(0, height, band_height):
         y_end = min(y_start + band_height, height)
@@ -86,6 +83,8 @@ def average_frames(
         ]
         stack = np.stack(band_slices, axis=0)
         result_bands.append(combine(stack))
+        bar.update()
+    bar.close()
 
     result = np.concatenate(result_bands, axis=0)
 
