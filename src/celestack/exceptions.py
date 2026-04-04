@@ -11,3 +11,7 @@ class DownscaleError(CelestackError):
 
 class TileReadError(CelestackError):
     """Raised when tile-reading is unavailable for a frame."""
+
+
+class MaskError(CelestackError):
+    """Raised when a mask operation fails."""
