@@ -63,7 +63,7 @@ Only artifacts that are expensive to recompute or represent user decisions are p
 
 Notes:
 
-- The `master_light` is only created when the algorithmic mask creation path is used (needed for clustering on full RGB + full bit depth). It is not created when the user supplies an external mask.
+- The `master_light` is only created when the algorithmic mask creation path is used (needed for clustering on full RGB + full bit depth). It is not created when the user supplies an external mask loaded via `Mask(path)`.
 - `stars.parquet` is a single table. Reference frame stars are the subset where `frame_id == reference_frame`. Star tracks across the stack are additional rows in the same table.
 - `transform.*` is a single model that maps `(x, y, t) → (x_ref, y_ref)`, where `t` is a time-like variable relative to the reference frame (see SkyTransform section). Serialization format is owned by the SkyTransform class and depends on the model choice.
 
@@ -71,12 +71,12 @@ Notes:
 
 ### Frame
 
-Universal image container. Represents any single image in the system — light frames, dark frames, master darks, master lights, and masks are all Frame instances.
+Universal image container. Represents any single image in the system — light frames, dark frames, master darks, and master lights are all Frame instances. Masks are a separate type; see the Mask section below.
 
 - **Constructor**: `Frame(path)`. Reads bit depth from the file. Extracts EXIF metadata (timestamp, camera model, exposure, ISO, focal length) where available; missing metadata are supported. For Celestack-written TIFFs, also reads embedded Celestack metadata (downscale factor, timestamp).
 - **Lazy array access**: `frame.array` loads the image into memory on first access and caches it. `frame.unload()` drops the cached array to free memory.
 - **Tile reading**: `frame.read_tile(x, y, width, height)` reads a rectangular region from disk without loading the full array. Enables memory-efficient tiled averaging of large stacks.
-- **Array shape**: depends on the image — `(H, W, 3)` for full-res RGB originals, `(H, W)` for grayscale proxies, `(H, W)` for boolean masks. No normalization; callers handle the shape they expect.
+- **Array shape**: depends on the image — `(H, W, 3)` for full-res RGB originals, `(H, W)` for grayscale proxies. No normalization; callers handle the shape they expect.
 - **Downscaling**: `frame.save_downscaled(path, downscale_factor, bit_depth=8, *, grayscale=True)` creates a downscaled proxy on disk and returns a new `Frame` instance pointing to it. Embeds `downscale_factor` and `timestamp` in the output file's Celestack metadata. Only available from a downscale factor of 1. When `grayscale=True` (the default), converts RGB input to grayscale.
 - **Coordinate recovery**: `downscale_factor` enables converting between proxy and full-res coordinates (multiply proxy coordinates by `downscale_factor` to get full-res coordinates).
 - **Saving**: `frame.save(path) → Frame` writes the array to disk as TIFF with EXIF metadata and returns a new `Frame` pointing to `path`. No Celestack metadata is embedded. If the frame is TIFF already, it is copied verbatim instead of re-encoded.
@@ -85,16 +85,26 @@ Universal image container. Represents any single image in the system — light f
 - **Downscale factor**: read-only, derived from Celestack metadata embedded in proxy TIFFs. Defaults to 1 for all other files (external files and full-res Celestack files). Only `save_downscaled` produces frames with a downscale factor greater than 1.
 - **Two kinds of files**: Frame transparently handles external files (user-provided TIFF/JPEG/PNG with EXIF metadata, downscale factor defaults to 1) and Celestack proxy files (tiled TIFFs with embedded Celestack metadata — fully self-describing). Full-res files written by Celestack to the project are TIFFs with EXIF but no Celestack metadata, and are treated the same as external files by the Frame class.
 
+### Mask
+
+Boolean foreground mask. A lightweight, file-backed container for a single-channel boolean image. Masks are distinct from `Frame` — they carry no EXIF metadata and no timestamp.
+
+- **Constructor**: `Mask(path)`. Loads from any supported image format (TIFF, JPEG, PNG). Any non-zero pixel becomes foreground (`True`). For Celestack-written proxy masks, also reads embedded Celestack metadata (downscale factor).
+- **Lazy array access**: `mask.array` loads and booleanizes the image on first access, caching the result as a `bool` array of shape `(H, W)`. `mask.unload()` drops the cache to free memory.
+- **Saving**: `mask.save(path) → Mask` writes the boolean array to an 8-bit grayscale TIFF (`True` → 255, `False` → 0) and returns a new `Mask` bound to that path. Always writes from the boolean array — never copies verbatim — to guarantee a clean on-disk format.
+- **Downscaling**: `mask.save_downscaled(path, downscale_factor) → Mask` writes a downscaled proxy using majority voting (blocks where more than half the pixels are foreground become foreground). Embeds `downscale_factor` in Celestack metadata. No timestamp is required or stored.
+- **Downscale factor**: read-only, from embedded Celestack metadata. Defaults to 1 for full-resolution and external masks.
+- **In-memory construction**: `Mask._from_array(array)` creates a mask from a boolean NumPy array with no backing path. Used internally by `MaskBuilder.build()`.
+
 ### MaskBuilder
 
-Creates the foreground mask. Creation paths:
+Builds a foreground mask algorithmically from an RGB source image: builds a full-res master light (averages all dark-corrected light frames, if darks are available), runs spatially-aware clustering (RGB + normalized X, Y feature space), presents clusters for user labeling, allows masking/unmasking with a rectangle, or a set of pixels.
 
-1. **External mask**: reads a user-supplied full-res mask file
-2. **Algorithmic**: builds a full-res master light (averages all dark-corrected light frames, if darks are available), runs spatially-aware clustering (RGB + normalized X, Y feature space), presents clusters for user labeling, allows masking/unmasking with a rectangle, or a set of pixels.
+For the **external mask** path, the project caller loads the user-supplied file directly as `Mask(path)` — no `MaskBuilder` is involved.
 
 The algorithmic path requires interactive user input (cluster labeling, region edits). To preserve the principle that API methods are the single source of truth for both CLI and GUI, mask building is decomposed into multiple atomic, non-interactive methods on Project (e.g. compute clusters, apply labels, modify region). Each method takes concrete inputs and produces concrete outputs. The interactive loop — presenting results and collecting user choices — lives entirely in the CLI/GUI layer, which orchestrates these atomic methods. The detailed method decomposition is beyond the scope of this document.
 
-Output: a full-res mask (boolean array) saved to `frames/full_res/mask.tiff`, plus a downscaled proxy copy saved to `frames/proxy/mask.tiff`. The mask arrays can be loaded as Frames.
+Output: `MaskBuilder.build()` returns a `Mask` object. The project then saves it to `frames/full_res/mask.tiff` via `mask.save()` and writes the proxy via `mask.save_downscaled()` to `frames/proxy/mask.tiff`.
 
 ### StarCatalog
 
