@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import numpy as np
 import plotly.graph_objects as go
 
@@ -12,10 +14,23 @@ from celestack.mask._mask import Mask
 from celestack.mask._plotting import plot_clusters as _plot_clusters
 from celestack.mask._plotting import plot_mask as _plot_mask
 
-# Type alias for a recorded manual edit operation.
-# Rectangle: ("rectangle", x0, y0, x1, y1, foreground)
-# Pixels:    ("pixels", coords_array, foreground)
-_Edit = tuple
+
+@dataclass
+class _RectEdit:
+    x0: int
+    y0: int
+    x1: int
+    y1: int
+    foreground: bool
+
+
+@dataclass
+class _PixelEdit:
+    pixels: np.ndarray
+    foreground: bool
+
+
+_Edit = _RectEdit | _PixelEdit
 
 
 class MaskBuilder:
@@ -136,7 +151,7 @@ class MaskBuilder:
             raise MaskError(msg)
 
         self._validate_rect(x0, y0, x1, y1)
-        self._edits.append(("rectangle", x0, y0, x1, y1, foreground))
+        self._edits.append(_RectEdit(x0=x0, y0=y0, x1=x1, y1=y1, foreground=foreground))
         self._mask[y0:y1, x0:x1] = foreground
 
     def mask_pixels(self, pixels: np.ndarray, *, foreground: bool) -> None:
@@ -172,7 +187,7 @@ class MaskBuilder:
                 msg = "Pixel coordinates out of image bounds"
                 raise ValueError(msg)
 
-        self._edits.append(("pixels", pixels.copy(), foreground))
+        self._edits.append(_PixelEdit(pixels=pixels.copy(), foreground=foreground))
         self._mask[pixels[:, 1], pixels[:, 0]] = foreground
 
     def build(self) -> Mask:
@@ -185,7 +200,7 @@ class MaskBuilder:
             MaskError: If no mask has been created yet. Call
                 ``apply_labels`` first.
         """
-        return Mask._from_array(self.mask)
+        return Mask._from_array(self.mask_array)
 
     def plot_clusters(self) -> go.Figure:
         """Visualize cluster labels overlaid on the source image.
@@ -220,15 +235,15 @@ class MaskBuilder:
             return _plot_mask(self._image.array, self._mask, self._bit_depth)
 
     @property
-    def mask(self) -> np.ndarray:
+    def mask_array(self) -> np.ndarray:
         """Current boolean foreground mask array with shape (H, W).
 
         Raises:
             MaskError: If no mask has been created yet. Call
-                ``apply_labels`` or use ``from_external``.
+                ``apply_labels`` first.
         """
         if self._mask is None:
-            msg = "No mask available; call apply_labels or use from_external"
+            msg = "No mask available; call apply_labels first"
             raise MaskError(msg)
         return self._mask
 
@@ -255,9 +270,7 @@ class MaskBuilder:
             mask: Boolean mask array to modify.
         """
         for edit in self._edits:
-            if edit[0] == "rectangle":
-                _, x0, y0, x1, y1, fg = edit
-                mask[y0:y1, x0:x1] = fg
-            elif edit[0] == "pixels":
-                _, coords, fg = edit
-                mask[coords[:, 1], coords[:, 0]] = fg
+            if isinstance(edit, _RectEdit):
+                mask[edit.y0 : edit.y1, edit.x0 : edit.x1] = edit.foreground
+            elif isinstance(edit, _PixelEdit):
+                mask[edit.pixels[:, 1], edit.pixels[:, 0]] = edit.foreground
