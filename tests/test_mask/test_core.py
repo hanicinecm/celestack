@@ -385,8 +385,8 @@ def test_apply_labels_creates_mask(rgb_frame: Frame) -> None:
     mb = MaskBuilder(rgb_frame)
     mb.compute_clusters(2)
     mb.apply_labels({0})
-    assert mb.mask.dtype == np.bool_
-    assert mb.mask.shape == rgb_frame.shape[:2]
+    assert mb.mask_array.dtype == np.bool_
+    assert mb.mask_array.shape == rgb_frame.shape[:2]
 
 
 def test_apply_labels_before_clustering_raises(rgb_frame: Frame) -> None:
@@ -409,7 +409,7 @@ def test_apply_labels_empty_set(rgb_frame: Frame) -> None:
     mb = MaskBuilder(rgb_frame)
     mb.compute_clusters(2)
     mb.apply_labels(set())
-    assert not mb.mask.any()
+    assert not mb.mask_array.any()
 
 
 def test_apply_labels_all_clusters(rgb_frame: Frame) -> None:
@@ -417,7 +417,7 @@ def test_apply_labels_all_clusters(rgb_frame: Frame) -> None:
     mb = MaskBuilder(rgb_frame)
     mb.compute_clusters(2)
     mb.apply_labels({0, 1})
-    assert mb.mask.all()
+    assert mb.mask_array.all()
 
 
 # ===========================================================================
@@ -429,7 +429,7 @@ def test_mask_property_before_labels_raises(rgb_frame: Frame) -> None:
     """mask property raises MaskError before any mask is created."""
     mb = MaskBuilder(rgb_frame)
     with pytest.raises(MaskError, match="No mask available"):
-        _ = mb.mask
+        _ = mb.mask_array
 
 
 def test_mask_property_after_compute_no_apply_raises(rgb_frame: Frame) -> None:
@@ -437,7 +437,7 @@ def test_mask_property_after_compute_no_apply_raises(rgb_frame: Frame) -> None:
     mb = MaskBuilder(rgb_frame)
     mb.compute_clusters(2)
     with pytest.raises(MaskError):
-        _ = mb.mask
+        _ = mb.mask_array
 
 
 # ===========================================================================
@@ -449,17 +449,17 @@ def test_mask_rectangle_sets_region(builder: MaskBuilder) -> None:
     """mask_rectangle correctly sets a rectangular region."""
     builder.apply_labels(set())
     builder.mask_rectangle(0, 0, 8, 6, foreground=True)
-    assert builder.mask[0, 0]
-    assert builder.mask[5, 7]
-    assert not builder.mask[6, 0]
+    assert builder.mask_array[0, 0]
+    assert builder.mask_array[5, 7]
+    assert not builder.mask_array[6, 0]
 
 
 def test_mask_rectangle_foreground_false(builder: MaskBuilder) -> None:
     """mask_rectangle can clear a region to background."""
     builder.apply_labels({0, 1})
     builder.mask_rectangle(0, 0, 4, 4, foreground=False)
-    assert not builder.mask[0, 0]
-    assert not builder.mask[3, 3]
+    assert not builder.mask_array[0, 0]
+    assert not builder.mask_array[3, 3]
 
 
 def test_mask_rectangle_before_mask_raises(rgb_frame: Frame) -> None:
@@ -500,9 +500,9 @@ def test_mask_pixels_sets_values(builder: MaskBuilder) -> None:
     builder.apply_labels(set())
     pixels = np.array([[2, 3], [10, 5]])  # (x, y)
     builder.mask_pixels(pixels, foreground=True)
-    assert builder.mask[3, 2]
-    assert builder.mask[5, 10]
-    assert not builder.mask[0, 0]
+    assert builder.mask_array[3, 2]
+    assert builder.mask_array[5, 10]
+    assert not builder.mask_array[0, 0]
 
 
 def test_mask_pixels_before_mask_raises(rgb_frame: Frame) -> None:
@@ -541,9 +541,9 @@ def test_edits_preserved_across_reclustering(rgb_frame: Frame) -> None:
     mb.compute_clusters(2)
     mb.apply_labels(set())
 
-    assert mb.mask[0, 0]
-    assert mb.mask[3, 3]
-    assert not mb.mask[5, 0]
+    assert mb.mask_array[0, 0]
+    assert mb.mask_array[3, 3]
+    assert not mb.mask_array[5, 0]
 
 
 def test_edits_not_reset_by_compute_clusters(rgb_frame: Frame) -> None:
@@ -568,8 +568,8 @@ def test_multiple_edits_replayed_in_order(rgb_frame: Frame) -> None:
     mb.compute_clusters(2)
     mb.apply_labels(set())
 
-    assert not mb.mask[0, 0]
-    assert mb.mask[0, 5]
+    assert not mb.mask_array[0, 0]
+    assert mb.mask_array[0, 5]
 
 
 # ===========================================================================
@@ -594,7 +594,7 @@ def test_build_array_matches(builder: MaskBuilder) -> None:
     """build() array matches the internal mask numpy array."""
     builder.apply_labels({0, 1})
     mask = builder.build()
-    np.testing.assert_array_equal(mask.array, builder.mask)
+    np.testing.assert_array_equal(mask.array, builder.mask_array)
 
 
 def test_build_is_independent_copy(builder: MaskBuilder) -> None:
