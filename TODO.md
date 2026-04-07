@@ -6,9 +6,6 @@
   be converted to `float64` which is very wasteful.
   The float depth should be systematically tied to the image bit-depth for any
   numerical operations on the arrays.
-  Possibly, let's always represent the image array in the smallest possible float
-  and only cast it back to `uint` before saving?
-  Not sure what will be implications be, e.g. for plotting etc.
 - [ ] **Optimize `average_frames`**: explore multithreading for tile I/O and
   multiprocessing for numeric aggregation. Known issue: averaging 100 frames
   takes much more than 10× the time of averaging 10 frames — the scaling is
