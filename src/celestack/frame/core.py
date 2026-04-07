@@ -13,7 +13,7 @@ import plotly.graph_objects as go
 import tifffile
 
 from celestack.exceptions import DownscaleError
-from celestack.frame._backends import get_backends, is_tiff_path
+from celestack.frame._backends import Backend, EmptyBackend, get_backends, is_tiff_path
 from celestack.frame._constants import CELESTACK_KEY
 from celestack.frame._image_ops import (
     convert_bit_depth,
@@ -43,18 +43,10 @@ class Frame:
             FileNotFoundError: If the path does not exist.
             ValueError: If the image format is unsupported.
         """
-        resolved = Path(path)
-        if not resolved.exists():
-            msg = f"Frame not found: {resolved}"
-            raise FileNotFoundError(msg)
+        self._path: Path | None = Path(path)
+        self._backend: Backend = EmptyBackend()
+        self._attach(path)
 
-        self._path = resolved
-        backends = get_backends()
-        suffix = self._path.suffix.lower()
-        if suffix not in backends:
-            msg = f"No backend found for: {self._path.suffix}"
-            raise ValueError(msg)
-        self._backend = backends[suffix]
         info = self._backend.inspect(self._path)
         self._shape = info.shape
         self._bit_depth = info.bit_depth
@@ -69,10 +61,38 @@ class Frame:
         self._metadata = extract_exif_metadata(self._path)
         self._array_cache: np.ndarray | None = None
 
+    def _attach(self, path: str | Path) -> None:
+        """Attach the frame to a backing path, making it a disk-backed frame.
+
+        Args:
+            path: The path to the image file to back this frame with.
+
+        Raises:
+            FileNotFoundError: If the path does not exist.
+        """
+        resolved = Path(path)
+        if not resolved.exists():
+            msg = f"Frame not found: {resolved}"
+            raise FileNotFoundError(msg)
+
+        self._path = resolved
+        backends = get_backends()
+        suffix = self._path.suffix.lower()
+        if suffix not in backends:
+            msg = f"No backend found for: {self._path.suffix}"
+            raise ValueError(msg)
+        self._backend = backends[suffix]
+
+    def _detach(self) -> None:
+        """Detach the frame from its backing path, making it an in-memory frame."""
+        self._path = None
+        self._backend = EmptyBackend()
+
     def _detached_copy(self) -> Frame:
         """Return a pathless in-memory copy of the frame state."""
+        # Make one-to-one copy:
         frame = type(self).__new__(type(self))
-        frame._path = None
+        frame._path = self._path
         frame._backend = self._backend
         frame._shape = self._shape
         frame._bit_depth = self._bit_depth
@@ -82,6 +102,10 @@ class Frame:
         frame._array_cache = (
             None if self._array_cache is None else self._array_cache.copy()
         )
+
+        # Detach the copy from any backing path:
+        frame._detach()
+
         return frame
 
     @property
@@ -229,9 +253,7 @@ class Frame:
                     extratags=build_tiff_extratags(self._metadata),
                 )
 
-        self._path = target
-        backends = get_backends()
-        self._backend = backends[target.suffix.lower()]
+        self._attach(target)
 
     @overload
     def subtract(
@@ -256,7 +278,7 @@ class Frame:
         other: Frame,
         *,
         inplace: bool = False,
-        correct_saturated: bool = False,
+        correct_saturated: bool = True,
     ) -> Frame | None:
         """Subtract *other* from this frame pixel-wise, saturating at zero.
 
@@ -290,7 +312,7 @@ class Frame:
                     self.array, other.array, correct_saturated=correct_saturated
                 )
             self._array_cache = result_array
-            self._path = None
+            self._detach()
             return None
 
         with self._conserve_cache(), other._conserve_cache():

@@ -161,7 +161,7 @@ def subtract_arrays(
         ValueError: If the dtype is unsupported.
     """
     if np.issubdtype(left.dtype, np.unsignedinteger):
-        result = left.astype(np.int64) - right.astype(np.int64)
+        result = left.astype(np.int32) - right.astype(np.int32)
         limits = np.iinfo(left.dtype)
         clipped = np.clip(result, limits.min, limits.max).astype(left.dtype)
         if correct_saturated:

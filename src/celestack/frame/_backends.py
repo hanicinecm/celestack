@@ -30,6 +30,20 @@ class Backend(Protocol):
         ...
 
 
+class EmptyBackend:
+    """Fallback backend that raises errors for all operations."""
+
+    SUFFIXES = frozenset()
+
+    def inspect(self, path: Path) -> FrameInfo:
+        msg = f"No backend available to inspect: {path}"
+        raise ValueError(msg)
+
+    def load_array(self, path: Path) -> np.ndarray:
+        msg = f"No backend available to load: {path}"
+        raise ValueError(msg)
+
+
 class TiffBackend:
     """Backend for TIFF files."""
 

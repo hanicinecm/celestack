@@ -399,6 +399,50 @@ def test_subtract_subtracts_pixels_and_clamps_unsigned(tmp_path: Path) -> None:
     )
 
 
+def test_subtract_correct_saturated_interpolates_blown_dark_pixel(
+    tmp_path: Path,
+) -> None:
+    """Burned dark pixels are interpolated from neighbors when correct_saturated=True."""
+    from tests.utils import write_gray_tiff
+
+    max_val = np.iinfo(np.uint16).max
+    light_arr = np.full((3, 3), 1000, dtype=np.uint16)
+    dark_arr = np.full((3, 3), 100, dtype=np.uint16)
+    dark_arr[1, 1] = max_val  # one blown hot pixel in the dark frame
+
+    light = Frame(write_gray_tiff(tmp_path / "light.tif", light_arr))
+    dark = Frame(write_gray_tiff(tmp_path / "dark.tif", dark_arr))
+
+    corrected = light.subtract(dark, correct_saturated=True)
+    uncorrected = light.subtract(dark, correct_saturated=False)
+
+    # Non-blown pixels subtract normally in both cases
+    assert corrected.array[0, 0] == 900
+    assert uncorrected.array[0, 0] == 900
+
+    # Blown pixel: corrected interpolates from neighbors (all 900),
+    # uncorrected clamps to zero
+    assert corrected.array[1, 1] == 900
+    assert uncorrected.array[1, 1] == 0
+
+
+def test_subtract_correct_saturated_is_default(tmp_path: Path) -> None:
+    """correct_saturated=True is the default for Frame.subtract."""
+    from tests.utils import write_gray_tiff
+
+    max_val = np.iinfo(np.uint16).max
+    light_arr = np.full((3, 3), 1000, dtype=np.uint16)
+    dark_arr = np.full((3, 3), 100, dtype=np.uint16)
+    dark_arr[1, 1] = max_val
+
+    light = Frame(write_gray_tiff(tmp_path / "light.tif", light_arr))
+    dark = Frame(write_gray_tiff(tmp_path / "dark.tif", dark_arr))
+
+    result = light.subtract(dark)
+
+    assert result.array[1, 1] == 900
+
+
 def test_subtract_inherits_left_metadata_and_timestamp(
     tmp_rgb_tiff: Path, tmp_path: Path
 ) -> None:
