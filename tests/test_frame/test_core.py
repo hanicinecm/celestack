@@ -92,6 +92,14 @@ def test_external_file_downscale_factor_is_1(
     assert Frame(tmp_rgb_jpeg).downscale_factor == 1
 
 
+def test_path_raises_for_detached_frame(tmp_rgb_tiff: Path, tmp_path: Path) -> None:
+    """path property raises AttributeError for a detached (in-memory) frame."""
+    frame = Frame(tmp_rgb_tiff)
+    detached = frame.subtract(Frame(tmp_rgb_tiff))
+    with pytest.raises(AttributeError, match="not backed by a file"):
+        _ = detached.path
+
+
 # --- Timestamp property ---
 
 
@@ -153,6 +161,15 @@ def test_array_loads_on_access(tmp_rgb_tiff: Path) -> None:
     assert arr.dtype == np.uint16
 
 
+def test_load_populates_cache(tmp_rgb_tiff: Path) -> None:
+    """load() populates the array cache without returning anything."""
+    frame = Frame(tmp_rgb_tiff)
+    assert frame._array_cache is None
+    result = frame.load()
+    assert result is None
+    assert frame._array_cache is not None
+
+
 def test_unload_frees_array(tmp_rgb_tiff: Path) -> None:
     """After unload, the cached array is released."""
     frame = Frame(tmp_rgb_tiff)
@@ -171,103 +188,171 @@ def test_array_reloads_after_unload(tmp_rgb_tiff: Path) -> None:
     np.testing.assert_array_equal(first, second)
 
 
-# --- Save ---
+# --- save_as ---
 
 
-def test_save_returns_frame(tmp_rgb_tiff: Path, tmp_path: Path) -> None:
-    """save() returns a Frame pointing to the new path."""
+def test_save_as_binds_frame_to_path(tmp_rgb_tiff: Path, tmp_path: Path) -> None:
+    """save_as() writes the file and binds the frame to the new path."""
     frame = Frame(tmp_rgb_tiff)
-    saved = frame.save(tmp_path / "saved.tif")
-    assert isinstance(saved, Frame)
-    assert saved.path == tmp_path / "saved.tif"
-
-
-def test_save_copies_tiff_verbatim(tmp_gray_tiff: Path, tmp_path: Path) -> None:
-    """TIFF is copied as-is (byte-identical)."""
-    frame = Frame(tmp_gray_tiff)
-    dest = tmp_path / "copied.tif"
-    frame.save(dest)
-    assert tmp_gray_tiff.read_bytes() == dest.read_bytes()
-
-
-def test_save_preserves_array_data(tmp_rgb_tiff: Path, tmp_path: Path) -> None:
-    """Pixel data survives a save-reload cycle."""
-    frame = Frame(tmp_rgb_tiff)
-    original = frame.array.copy()
-    saved = frame.save(tmp_path / "copy.tif")
-    np.testing.assert_array_equal(saved.array, original)
-
-
-def test_save_preserves_exif_metadata(tmp_rgb_tiff: Path, tmp_path: Path) -> None:
-    """Camera model and datetime survive a save-reload cycle."""
-    frame = Frame(tmp_rgb_tiff)
-    saved = frame.save(tmp_path / "with_meta.tif")
-    assert saved.metadata.camera_model == CAMERA_MODEL
-    assert saved.timestamp is not None
-
-
-def test_save_preserves_all_exif_fields(tmp_rgb_jpeg: Path, tmp_path: Path) -> None:
-    """All EXIF fields round-trip through save()."""
-    frame = Frame(tmp_rgb_jpeg)
-    saved = frame.save(tmp_path / "saved.tif")
-    assert saved.metadata.camera_make == CAMERA_MAKE
-    assert saved.metadata.camera_model == CAMERA_MODEL
-    assert saved.metadata.datetime is not None
-    assert saved.metadata.exposure is not None
-    assert saved.metadata.f_number is not None
-    assert saved.metadata.iso is not None
-    assert saved.metadata.focal_length is not None
-    assert saved.metadata.lens_model == LENS_MODEL
-
-
-def test_save_does_not_embed_celestack_metadata(
-    tmp_rgb_tiff: Path, tmp_path: Path
-) -> None:
-    """Saved full-res frames have no Celestack metadata."""
-    frame = Frame(tmp_rgb_tiff)
-    saved = frame.save(tmp_path / "fullres.tif")
-    assert saved.downscale_factor == 1
-
-
-def test_save_copies_tiled_tiff(tmp_tiled_tiff: Path, tmp_path: Path) -> None:
-    """Tiled TIFF is copied verbatim, not re-encoded."""
-    frame = Frame(tmp_tiled_tiff)
-    dest = tmp_path / "copied.tif"
-    frame.save(dest)
-    assert tmp_tiled_tiff.read_bytes() == dest.read_bytes()
-
-
-def test_save_rejects_non_tiff_extension(tmp_rgb_tiff: Path, tmp_path: Path) -> None:
-    """save() raises ValueError for non-TIFF output path."""
-    frame = Frame(tmp_rgb_tiff)
-    with pytest.raises(ValueError, match="TIFF"):
-        frame.save(tmp_path / "out.png")
-
-
-def test_save_creates_parent_directories(tmp_rgb_tiff: Path, tmp_path: Path) -> None:
-    """save() creates missing parent directories."""
-    frame = Frame(tmp_rgb_tiff)
-    dest = tmp_path / "nested" / "deep" / "out.tif"
-    saved = frame.save(dest)
-    assert saved.path == dest
+    dest = tmp_path / "saved.tif"
+    result = frame.save_as(dest)
+    assert result is None
+    assert frame._path == dest
     assert dest.exists()
 
 
-def test_save_jpeg_as_tiff_preserves_pixels(tmp_rgb_jpeg: Path, tmp_path: Path) -> None:
-    """Pixel data from a JPEG source survives re-encoding as TIFF."""
+def test_save_as_copies_tiff_verbatim(tmp_gray_tiff: Path, tmp_path: Path) -> None:
+    """TIFF source is copied as-is (byte-identical)."""
+    frame = Frame(tmp_gray_tiff)
+    dest = tmp_path / "copied.tif"
+    frame.save_as(dest)
+    assert tmp_gray_tiff.read_bytes() == dest.read_bytes()
+
+
+def test_save_as_preserves_array_data(tmp_rgb_tiff: Path, tmp_path: Path) -> None:
+    """Pixel data written by save_as survives a reload cycle."""
+    frame = Frame(tmp_rgb_tiff)
+    original = frame.array.copy()
+    dest = tmp_path / "copy.tif"
+    frame.save_as(dest)
+    reloaded = Frame(dest)
+    np.testing.assert_array_equal(reloaded.array, original)
+
+
+def test_save_as_preserves_exif_metadata(tmp_rgb_tiff: Path, tmp_path: Path) -> None:
+    """Camera model and datetime survive a save_as/reload cycle."""
+    frame = Frame(tmp_rgb_tiff)
+    dest = tmp_path / "with_meta.tif"
+    frame.save_as(dest)
+    reloaded = Frame(dest)
+    assert reloaded.metadata.camera_model == CAMERA_MODEL
+    assert reloaded.timestamp is not None
+
+
+def test_save_as_preserves_all_exif_fields(tmp_rgb_jpeg: Path, tmp_path: Path) -> None:
+    """All EXIF fields round-trip through save_as."""
+    frame = Frame(tmp_rgb_jpeg)
+    dest = tmp_path / "saved.tif"
+    frame.save_as(dest)
+    reloaded = Frame(dest)
+    assert reloaded.metadata.camera_make == CAMERA_MAKE
+    assert reloaded.metadata.camera_model == CAMERA_MODEL
+    assert reloaded.metadata.datetime is not None
+    assert reloaded.metadata.exposure is not None
+    assert reloaded.metadata.f_number is not None
+    assert reloaded.metadata.iso is not None
+    assert reloaded.metadata.focal_length is not None
+    assert reloaded.metadata.lens_model == LENS_MODEL
+
+
+def test_save_as_does_not_embed_celestack_metadata(
+    tmp_rgb_tiff: Path, tmp_path: Path
+) -> None:
+    """Saving a full-res frame produces no Celestack metadata."""
+    frame = Frame(tmp_rgb_tiff)
+    dest = tmp_path / "fullres.tif"
+    frame.save_as(dest)
+    reloaded = Frame(dest)
+    assert reloaded.downscale_factor == 1
+
+
+def test_save_as_copies_tiled_tiff(tmp_tiled_tiff: Path, tmp_path: Path) -> None:
+    """Tiled TIFF is copied verbatim, not re-encoded."""
+    frame = Frame(tmp_tiled_tiff)
+    dest = tmp_path / "copied.tif"
+    frame.save_as(dest)
+    assert tmp_tiled_tiff.read_bytes() == dest.read_bytes()
+
+
+def test_save_as_rejects_non_tiff_extension(tmp_rgb_tiff: Path, tmp_path: Path) -> None:
+    """save_as() raises ValueError for non-TIFF output path."""
+    frame = Frame(tmp_rgb_tiff)
+    with pytest.raises(ValueError, match="TIFF"):
+        frame.save_as(tmp_path / "out.png")
+
+
+def test_save_as_raises_if_exists_without_overwrite(
+    tmp_rgb_tiff: Path, tmp_path: Path
+) -> None:
+    """save_as() raises FileExistsError if destination exists and overwrite=False."""
+    frame = Frame(tmp_rgb_tiff)
+    dest = tmp_path / "out.tif"
+    frame.save_as(dest)
+    frame2 = Frame(tmp_rgb_tiff)
+    with pytest.raises(FileExistsError):
+        frame2.save_as(dest)
+
+
+def test_save_as_overwrites_when_requested(tmp_rgb_tiff: Path, tmp_path: Path) -> None:
+    """save_as(overwrite=True) replaces an existing file without error."""
+    frame = Frame(tmp_rgb_tiff)
+    dest = tmp_path / "out.tif"
+    frame.save_as(dest)
+    frame2 = Frame(tmp_rgb_tiff)
+    frame2.save_as(dest, overwrite=True)
+    assert dest.exists()
+
+
+def test_save_as_creates_parent_directories(tmp_rgb_tiff: Path, tmp_path: Path) -> None:
+    """save_as() creates missing parent directories."""
+    frame = Frame(tmp_rgb_tiff)
+    dest = tmp_path / "nested" / "deep" / "out.tif"
+    frame.save_as(dest)
+    assert dest.exists()
+
+
+def test_save_as_jpeg_source_writes_tiff(tmp_rgb_jpeg: Path, tmp_path: Path) -> None:
+    """Pixel data from a JPEG source survives re-encoding via save_as."""
     frame = Frame(tmp_rgb_jpeg)
     original = frame.array.copy()
-    saved = frame.save(tmp_path / "from_jpeg.tif")
-    np.testing.assert_array_equal(saved.array, original)
+    dest = tmp_path / "from_jpeg.tif"
+    frame.save_as(dest)
+    reloaded = Frame(dest)
+    np.testing.assert_array_equal(reloaded.array, original)
+
+
+def test_save_as_updates_backend_for_jpeg_source(
+    tmp_rgb_jpeg: Path, tmp_path: Path
+) -> None:
+    """After save_as, a JPEG-sourced frame uses the TIFF backend."""
+    from celestack.frame._backends import get_backends
+
+    frame = Frame(tmp_rgb_jpeg)
+    dest = tmp_path / "out.tif"
+    frame.save_as(dest)
+    tiff_backend_type = type(get_backends()[".tif"])
+    assert isinstance(frame._backend, tiff_backend_type)
+
+
+def test_save_as_embeds_celestack_metadata_for_proxy(
+    tmp_rgb_tiff: Path, tmp_path: Path
+) -> None:
+    """Saving a proxy (downscale_factor > 1) embeds Celestack metadata."""
+    proxy = Frame(tmp_rgb_tiff).downscaled_copy(4)
+    dest = tmp_path / "proxy.tif"
+    proxy.save_as(dest)
+    reloaded = Frame(dest)
+    assert reloaded.downscale_factor == 4
+
+
+def test_save_as_proxy_without_timestamp_omits_timestamp(
+    tmp_no_metadata_tiff: Path, tmp_path: Path
+) -> None:
+    """Proxy saved without a timestamp has None timestamp after reload."""
+    proxy = Frame(tmp_no_metadata_tiff).downscaled_copy(2)
+    assert proxy.timestamp is None
+    dest = tmp_path / "proxy.tif"
+    proxy.save_as(dest)
+    reloaded = Frame(dest)
+    assert reloaded.timestamp is None
+    assert reloaded.downscale_factor == 2
 
 
 # --- Subtraction ---
 
 
-def test_subtraction_returns_in_memory_frame(
-    tmp_gray_tiff: Path, tmp_path: Path
-) -> None:
-    """Subtracting frames returns a pathless in-memory frame."""
+def test_subtract_returns_detached_frame(tmp_gray_tiff: Path, tmp_path: Path) -> None:
+    """subtract() returns a pathless in-memory frame."""
     dark_path = tmp_path / "dark.tif"
     dark_array = np.full((IMG_H, IMG_W), fill_value=10, dtype=np.uint16)
     from tests.utils import write_gray_tiff
@@ -275,16 +360,16 @@ def test_subtraction_returns_in_memory_frame(
     dark = Frame(write_gray_tiff(dark_path, dark_array))
     light = Frame(tmp_gray_tiff)
 
-    result = light - dark
+    result = light.subtract(dark)
 
     assert isinstance(result, Frame)
-    assert result.path is None
+    assert result._path is None
     assert result.shape == light.shape
     assert result.dtype == light.dtype
     assert result.bit_depth == light.bit_depth
 
 
-def test_subtraction_subtracts_pixels_and_clamps_unsigned(tmp_path: Path) -> None:
+def test_subtract_subtracts_pixels_and_clamps_unsigned(tmp_path: Path) -> None:
     """Unsigned subtraction is saturating at zero."""
     from tests.utils import write_gray_tiff
 
@@ -297,7 +382,7 @@ def test_subtraction_subtracts_pixels_and_clamps_unsigned(tmp_path: Path) -> Non
         np.array([[3, 9], [20, 1]], dtype=np.uint16),
     )
 
-    result = Frame(left_path) - Frame(right_path)
+    result = Frame(left_path).subtract(Frame(right_path))
 
     np.testing.assert_array_equal(
         result.array,
@@ -305,7 +390,7 @@ def test_subtraction_subtracts_pixels_and_clamps_unsigned(tmp_path: Path) -> Non
     )
 
 
-def test_subtraction_inherits_left_metadata_and_timestamp(
+def test_subtract_inherits_left_metadata_and_timestamp(
     tmp_rgb_tiff: Path, tmp_path: Path
 ) -> None:
     """Result inherits metadata and timestamp from the left frame."""
@@ -318,7 +403,7 @@ def test_subtraction_inherits_left_metadata_and_timestamp(
     left = Frame(tmp_rgb_tiff)
     left.timestamp = 123.0
 
-    result = left - Frame(right_path)
+    result = left.subtract(Frame(right_path))
 
     assert result.metadata.camera_make == left.metadata.camera_make
     assert result.metadata.camera_model == left.metadata.camera_model
@@ -331,25 +416,65 @@ def test_subtraction_inherits_left_metadata_and_timestamp(
     assert result.timestamp == pytest.approx(123.0)
 
 
-def test_subtraction_save_persists_in_memory_result(
-    tmp_gray_tiff: Path, tmp_path: Path
-) -> None:
-    """A subtraction result can be saved later as a TIFF."""
+def test_subtract_result_can_be_saved(tmp_gray_tiff: Path, tmp_path: Path) -> None:
+    """A subtraction result can be persisted via save_as."""
     from tests.utils import write_gray_tiff
 
     dark_path = write_gray_tiff(
         tmp_path / "dark.tif",
         np.full((IMG_H, IMG_W), fill_value=1, dtype=np.uint16),
     )
-    result = Frame(tmp_gray_tiff) - Frame(dark_path)
+    result = Frame(tmp_gray_tiff).subtract(Frame(dark_path))
+    expected = result.array.copy()
 
-    saved = result.save(tmp_path / "subtracted.tif")
+    dest = tmp_path / "subtracted.tif"
+    result.save_as(dest)
 
-    assert saved.path == tmp_path / "subtracted.tif"
-    np.testing.assert_array_equal(saved.array, result.array)
+    assert result._path == dest
+    reloaded = Frame(dest)
+    np.testing.assert_array_equal(reloaded.array, expected)
 
 
-def test_subtraction_shape_mismatch_raises(tmp_path: Path) -> None:
+def test_subtract_inplace_modifies_self(tmp_path: Path) -> None:
+    """inplace=True subtracts into self and returns None."""
+    from tests.utils import write_gray_tiff
+
+    left_path = write_gray_tiff(
+        tmp_path / "left.tif",
+        np.array([[20, 5], [100, 0]], dtype=np.uint16),
+    )
+    right_path = write_gray_tiff(
+        tmp_path / "right.tif",
+        np.array([[3, 9], [20, 1]], dtype=np.uint16),
+    )
+    left = Frame(left_path)
+    result = left.subtract(Frame(right_path), inplace=True)
+
+    assert result is None
+    np.testing.assert_array_equal(
+        left.array,
+        np.array([[17, 0], [80, 0]], dtype=np.uint16),
+    )
+
+
+def test_subtract_inplace_detaches_from_path(tmp_path: Path) -> None:
+    """inplace=True detaches the frame from its backing path."""
+    from tests.utils import write_gray_tiff
+
+    left_path = write_gray_tiff(
+        tmp_path / "left.tif",
+        np.full((24, 32), 100, dtype=np.uint16),
+    )
+    right_path = write_gray_tiff(
+        tmp_path / "right.tif",
+        np.full((24, 32), 10, dtype=np.uint16),
+    )
+    left = Frame(left_path)
+    left.subtract(Frame(right_path), inplace=True)
+    assert left._path is None
+
+
+def test_subtract_shape_mismatch_raises(tmp_path: Path) -> None:
     """Frames with different shapes cannot be subtracted."""
     from tests.utils import write_gray_tiff
 
@@ -363,10 +488,10 @@ def test_subtraction_shape_mismatch_raises(tmp_path: Path) -> None:
     )
 
     with pytest.raises(ValueError, match="Shape mismatch"):
-        _ = Frame(left_path) - Frame(right_path)
+        Frame(left_path).subtract(Frame(right_path))
 
 
-def test_subtraction_dtype_mismatch_raises(tmp_path: Path) -> None:
+def test_subtract_dtype_mismatch_raises(tmp_path: Path) -> None:
     """Frames with different dtypes cannot be subtracted."""
     from tests.utils import write_gray_tiff
 
@@ -380,10 +505,10 @@ def test_subtraction_dtype_mismatch_raises(tmp_path: Path) -> None:
     )
 
     with pytest.raises(ValueError, match="Dtype mismatch"):
-        _ = Frame(left_path) - Frame(right_path)
+        Frame(left_path).subtract(Frame(right_path))
 
 
-def test_subtraction_downscale_factor_mismatch_raises(
+def test_subtract_downscale_factor_mismatch_raises(
     tmp_rgb_tiff: Path, tmp_path: Path
 ) -> None:
     """Frames with different downscale factors cannot be subtracted."""
@@ -393,84 +518,140 @@ def test_subtraction_downscale_factor_mismatch_raises(
         tmp_path / "other.tif",
         np.zeros((IMG_H, IMG_W, 3), dtype=np.uint16),
     )
-    left = Frame(tmp_rgb_tiff).save_downscaled(tmp_path / "left_proxy.tif", 2)
+    left = Frame(tmp_rgb_tiff).downscaled_copy(2)
+    left_dest = tmp_path / "left_proxy.tif"
+    left.save_as(left_dest)
+
     right = Frame(other_path)
     right.timestamp = 1.0
-    right = right.save_downscaled(tmp_path / "right_proxy.tif", 4)
+    right_proxy = right.downscaled_copy(4)
+    right_dest = tmp_path / "right_proxy.tif"
+    right_proxy.save_as(right_dest)
 
     with pytest.raises(ValueError, match="Downscale factor mismatch"):
-        _ = left - right
+        left.subtract(right_proxy)
 
 
-# --- Downscale ---
+def test_subtract_bit_depth_mismatch_raises(tmp_path: Path) -> None:
+    """Frames with different bit depths cannot be subtracted."""
+    from tests.utils import write_gray_tiff
+
+    left_path = write_gray_tiff(
+        tmp_path / "left.tif",
+        np.zeros((10, 10), dtype=np.uint16),
+    )
+    # Write a uint16 array but mark it as 8-bit by using uint8 values written
+    # as uint8 — the easiest way is a separate uint8 file.
+    right_path = write_gray_tiff(
+        tmp_path / "right.tif",
+        np.zeros((10, 10), dtype=np.uint8),
+    )
+    left = Frame(left_path)
+    right = Frame(right_path)
+    # Force matching dtype so only bit_depth differs — patch directly.
+    right._dtype = left._dtype
+    with pytest.raises(ValueError, match="Bit depth mismatch"):
+        left.subtract(right)
 
 
-def test_save_downscaled_dimensions(tmp_rgb_tiff: Path, tmp_path: Path) -> None:
-    """Downscale factor=2 halves each spatial dimension."""
-    frame = Frame(tmp_rgb_tiff)
-    proxy = frame.save_downscaled(tmp_path / "proxy.tif", downscale_factor=2)
-    arr = proxy.array
-    assert arr.shape[0] == IMG_H // 2
-    assert arr.shape[1] == IMG_W // 2
+
+def test_subtract_inplace_conserves_other_cache(tmp_path: Path) -> None:
+    """inplace=True conserves the cache state of the other operand."""
+    from tests.utils import write_gray_tiff
+
+    left_path = write_gray_tiff(
+        tmp_path / "left.tif", np.full((24, 32), 100, dtype=np.uint16)
+    )
+    right_path = write_gray_tiff(
+        tmp_path / "right.tif", np.full((24, 32), 10, dtype=np.uint16)
+    )
+    left = Frame(left_path)
+    right = Frame(right_path)
+    assert right._array_cache is None
+    left.subtract(right, inplace=True)
+    assert right._array_cache is None
+
+    # Also verify: if other was already loaded, it stays loaded.
+    left2 = Frame(left_path)
+    _ = right.array
+    assert right._array_cache is not None
+    left2.subtract(right, inplace=True)
+    assert right._array_cache is not None
 
 
-def test_save_downscaled_grayscale(tmp_rgb_tiff: Path, tmp_path: Path) -> None:
+# --- downscaled_copy ---
+
+
+def test_downscaled_copy_dimensions(tmp_rgb_tiff: Path) -> None:
+    """downscale_factor=2 halves each spatial dimension."""
+    proxy = Frame(tmp_rgb_tiff).downscaled_copy(downscale_factor=2)
+    assert proxy.shape[0] == IMG_H // 2
+    assert proxy.shape[1] == IMG_W // 2
+
+
+def test_downscaled_copy_grayscale(tmp_rgb_tiff: Path) -> None:
     """RGB input with grayscale=True produces a 2D array."""
-    frame = Frame(tmp_rgb_tiff)
-    proxy = frame.save_downscaled(tmp_path / "gray.tif", downscale_factor=2)
+    proxy = Frame(tmp_rgb_tiff).downscaled_copy(downscale_factor=2)
     assert proxy.array.ndim == 2
 
 
-def test_save_downscaled_no_grayscale(tmp_rgb_tiff: Path, tmp_path: Path) -> None:
+def test_downscaled_copy_no_grayscale(tmp_rgb_tiff: Path) -> None:
     """grayscale=False preserves RGB channels."""
-    frame = Frame(tmp_rgb_tiff)
-    proxy = frame.save_downscaled(
-        tmp_path / "rgb.tif", downscale_factor=2, grayscale=False
-    )
+    proxy = Frame(tmp_rgb_tiff).downscaled_copy(downscale_factor=2, grayscale=False)
     assert proxy.array.ndim == 3
     assert proxy.array.shape[2] == 3
 
 
-def test_save_downscaled_bit_depth(tmp_rgb_tiff: Path, tmp_path: Path) -> None:
+def test_downscaled_copy_bit_depth(tmp_rgb_tiff: Path) -> None:
     """16-bit input downscaled to 8-bit produces uint8 output."""
     frame = Frame(tmp_rgb_tiff)
     assert frame.bit_depth == 16
-    proxy = frame.save_downscaled(
-        tmp_path / "8bit.tif", downscale_factor=2, bit_depth=8
-    )
+    proxy = frame.downscaled_copy(downscale_factor=2, bit_depth=8)
     assert proxy.bit_depth == 8
     assert proxy.array.dtype == np.uint8
 
 
-def test_save_downscaled_returns_frame(tmp_rgb_tiff: Path, tmp_path: Path) -> None:
-    """Returned Frame has correct downscale_factor read from file."""
-    frame = Frame(tmp_rgb_tiff)
-    proxy = frame.save_downscaled(tmp_path / "proxy.tif", downscale_factor=4)
+def test_downscaled_copy_sets_downscale_factor(tmp_rgb_tiff: Path) -> None:
+    """Returned frame has downscale_factor matching the requested value."""
+    proxy = Frame(tmp_rgb_tiff).downscaled_copy(downscale_factor=4)
     assert proxy.downscale_factor == 4
 
 
-def test_save_downscaled_from_proxy_raises(tmp_rgb_tiff: Path, tmp_path: Path) -> None:
+def test_downscaled_copy_is_detached(tmp_rgb_tiff: Path) -> None:
+    """downscaled_copy returns an in-memory detached frame."""
+    proxy = Frame(tmp_rgb_tiff).downscaled_copy(downscale_factor=2)
+    assert proxy._path is None
+
+
+def test_downscaled_copy_from_proxy_raises(tmp_rgb_tiff: Path, tmp_path: Path) -> None:
     """Downscaling an already-downscaled frame raises DownscaleError."""
-    frame = Frame(tmp_rgb_tiff)
-    proxy = frame.save_downscaled(tmp_path / "proxy.tif", downscale_factor=2)
+    proxy = Frame(tmp_rgb_tiff).downscaled_copy(downscale_factor=2)
     with pytest.raises(DownscaleError, match="Cannot downscale a proxy"):
-        proxy.save_downscaled(tmp_path / "double.tif", downscale_factor=2)
+        proxy.downscaled_copy(downscale_factor=2)
 
 
-def test_save_downscaled_carries_timestamp(tmp_rgb_tiff: Path, tmp_path: Path) -> None:
-    """Source timestamp is preserved in the downscaled output."""
+def test_downscaled_copy_inherits_timestamp(tmp_rgb_tiff: Path) -> None:
+    """Downscaled copy inherits the source timestamp."""
     frame = Frame(tmp_rgb_tiff)
     source_ts = frame.timestamp
-    proxy = frame.save_downscaled(tmp_path / "proxy.tif", downscale_factor=2)
+    proxy = frame.downscaled_copy(downscale_factor=2)
     assert proxy.timestamp == pytest.approx(source_ts)
 
 
-def test_save_downscaled_preserves_exif_metadata(
-    tmp_rgb_jpeg: Path, tmp_path: Path
+def test_downscaled_copy_inherits_none_timestamp(
+    tmp_no_metadata_tiff: Path,
 ) -> None:
-    """EXIF metadata survives a downscale round-trip."""
+    """Downscaled copy inherits None timestamp without raising."""
+    frame = Frame(tmp_no_metadata_tiff)
+    assert frame.timestamp is None
+    proxy = frame.downscaled_copy(downscale_factor=2)
+    assert proxy.timestamp is None
+
+
+def test_downscaled_copy_preserves_exif_metadata(tmp_rgb_jpeg: Path) -> None:
+    """EXIF metadata is inherited by the downscaled copy."""
     frame = Frame(tmp_rgb_jpeg)
-    proxy = frame.save_downscaled(tmp_path / "proxy.tif", downscale_factor=2)
+    proxy = frame.downscaled_copy(downscale_factor=2)
     assert proxy.metadata.camera_make == CAMERA_MAKE
     assert proxy.metadata.camera_model == CAMERA_MODEL
     assert proxy.metadata.datetime is not None
@@ -481,74 +662,41 @@ def test_save_downscaled_preserves_exif_metadata(
     assert proxy.metadata.lens_model == LENS_MODEL
 
 
-def test_save_downscaled_no_timestamp_raises(
-    tmp_no_metadata_tiff: Path, tmp_path: Path
-) -> None:
-    """Frame with no timestamp raises ValueError on downscale."""
-    frame = Frame(tmp_no_metadata_tiff)
-    assert frame.timestamp is None
-    with pytest.raises(ValueError, match="non-None timestamp"):
-        frame.save_downscaled(tmp_path / "proxy.tif", downscale_factor=2)
-
-
-def test_save_downscaled_rejects_non_tiff_extension(
-    tmp_rgb_tiff: Path, tmp_path: Path
-) -> None:
-    """save_downscaled() raises ValueError for non-TIFF output path."""
-    frame = Frame(tmp_rgb_tiff)
-    with pytest.raises(ValueError, match="TIFF"):
-        frame.save_downscaled(tmp_path / "proxy.png", downscale_factor=2)
-
-
-def test_save_downscaled_rejects_factor_below_one(
-    tmp_rgb_tiff: Path, tmp_path: Path
-) -> None:
+def test_downscaled_copy_rejects_factor_below_one(tmp_rgb_tiff: Path) -> None:
     """downscale_factor < 1 raises ValueError."""
-    frame = Frame(tmp_rgb_tiff)
     with pytest.raises(ValueError, match="downscale_factor must be >= 1"):
-        frame.save_downscaled(tmp_path / "proxy.tif", downscale_factor=0)
+        Frame(tmp_rgb_tiff).downscaled_copy(downscale_factor=0)
 
 
-def test_save_downscaled_factor_one(tmp_rgb_tiff: Path, tmp_path: Path) -> None:
-    """factor=1 embeds Celestack metadata without spatial change."""
+def test_downscaled_copy_factor_one(tmp_rgb_tiff: Path) -> None:
+    """factor=1 returns a detached copy with no spatial change."""
     frame = Frame(tmp_rgb_tiff)
-    proxy = frame.save_downscaled(
-        tmp_path / "proxy.tif", downscale_factor=1, bit_depth=8
-    )
+    proxy = frame.downscaled_copy(downscale_factor=1, bit_depth=8)
     assert proxy.downscale_factor == 1
-    assert proxy.array.shape[0] == IMG_H
-    assert proxy.array.shape[1] == IMG_W
+    assert proxy.shape[0] == IMG_H
+    assert proxy.shape[1] == IMG_W
     assert proxy.bit_depth == 8
-    assert proxy.timestamp is not None
 
 
-def test_save_downscaled_to_16bit(tmp_rgb_tiff: Path, tmp_path: Path) -> None:
+def test_downscaled_copy_to_16bit(tmp_rgb_tiff: Path) -> None:
     """16-bit input downscaled to 16-bit preserves uint16 dtype."""
-    frame = Frame(tmp_rgb_tiff)
-    proxy = frame.save_downscaled(
-        tmp_path / "16bit.tif", downscale_factor=2, bit_depth=16
-    )
+    proxy = Frame(tmp_rgb_tiff).downscaled_copy(downscale_factor=2, bit_depth=16)
     assert proxy.bit_depth == 16
     assert proxy.array.dtype == np.uint16
 
 
-def test_save_downscaled_to_32bit(tmp_rgb_tiff: Path, tmp_path: Path) -> None:
+def test_downscaled_copy_to_32bit(tmp_rgb_tiff: Path) -> None:
     """16-bit input downscaled to 32-bit produces float32 output."""
-    frame = Frame(tmp_rgb_tiff)
-    proxy = frame.save_downscaled(
-        tmp_path / "32bit.tif", downscale_factor=2, bit_depth=32
-    )
+    proxy = Frame(tmp_rgb_tiff).downscaled_copy(downscale_factor=2, bit_depth=32)
     assert proxy.bit_depth == 32
     assert proxy.array.dtype == np.float32
 
 
-def test_save_downscaled_grayscale_input(tmp_gray_tiff: Path, tmp_path: Path) -> None:
+def test_downscaled_copy_grayscale_input(tmp_gray_tiff: Path) -> None:
     """Already-grayscale frame with grayscale=True stays 2D."""
     frame = Frame(tmp_gray_tiff)
     frame.timestamp = 1.0
-    proxy = frame.save_downscaled(
-        tmp_path / "gray_proxy.tif", downscale_factor=2, grayscale=True
-    )
+    proxy = frame.downscaled_copy(downscale_factor=2, grayscale=True)
     assert proxy.array.ndim == 2
 
 
@@ -675,46 +823,42 @@ def test_plot_show_pixels_rgb(tmp_rgb_tiff: Path) -> None:
 # --- Cache conservation ---
 
 
-def test_save_conserves_unloaded_cache(tmp_rgb_jpeg: Path, tmp_path: Path) -> None:
-    """save() does not leave the array cached when it was not loaded before."""
+def test_save_as_conserves_unloaded_cache(tmp_rgb_jpeg: Path, tmp_path: Path) -> None:
+    """save_as() does not leave the array cached when it was not loaded before."""
     frame = Frame(tmp_rgb_jpeg)
     assert frame._array_cache is None
-    frame.save(tmp_path / "out.tif")
+    frame.save_as(tmp_path / "out.tif")
     assert frame._array_cache is None
 
 
-def test_save_conserves_loaded_cache(tmp_rgb_jpeg: Path, tmp_path: Path) -> None:
-    """save() keeps the array cached when it was already loaded."""
+def test_save_as_conserves_loaded_cache(tmp_rgb_jpeg: Path, tmp_path: Path) -> None:
+    """save_as() keeps the array cached when it was already loaded."""
     frame = Frame(tmp_rgb_jpeg)
     _ = frame.array
     assert frame._array_cache is not None
-    frame.save(tmp_path / "out.tif")
+    frame.save_as(tmp_path / "out.tif")
     assert frame._array_cache is not None
 
 
-def test_save_downscaled_conserves_unloaded_cache(
-    tmp_rgb_tiff: Path, tmp_path: Path
-) -> None:
-    """save_downscaled() does not leave the array cached when unloaded."""
+def test_downscaled_copy_conserves_unloaded_cache(tmp_rgb_tiff: Path) -> None:
+    """downscaled_copy() does not leave the source array cached when unloaded."""
     frame = Frame(tmp_rgb_tiff)
     assert frame._array_cache is None
-    frame.save_downscaled(tmp_path / "proxy.tif", downscale_factor=2)
+    frame.downscaled_copy(downscale_factor=2)
     assert frame._array_cache is None
 
 
-def test_save_downscaled_conserves_loaded_cache(
-    tmp_rgb_tiff: Path, tmp_path: Path
-) -> None:
-    """save_downscaled() keeps the array cached when already loaded."""
+def test_downscaled_copy_conserves_loaded_cache(tmp_rgb_tiff: Path) -> None:
+    """downscaled_copy() keeps the source array cached when already loaded."""
     frame = Frame(tmp_rgb_tiff)
     _ = frame.array
     assert frame._array_cache is not None
-    frame.save_downscaled(tmp_path / "proxy.tif", downscale_factor=2)
+    frame.downscaled_copy(downscale_factor=2)
     assert frame._array_cache is not None
 
 
-def test_sub_conserves_unloaded_cache(tmp_path: Path) -> None:
-    """Subtraction does not leave arrays cached on either operand."""
+def test_subtract_conserves_unloaded_cache(tmp_path: Path) -> None:
+    """subtract() does not leave arrays cached on either operand."""
     from tests.utils import write_gray_tiff
 
     left = Frame(
@@ -725,13 +869,13 @@ def test_sub_conserves_unloaded_cache(tmp_path: Path) -> None:
     )
     assert left._array_cache is None
     assert right._array_cache is None
-    _ = left - right
+    left.subtract(right)
     assert left._array_cache is None
     assert right._array_cache is None
 
 
-def test_sub_conserves_loaded_cache(tmp_path: Path) -> None:
-    """Subtraction keeps arrays cached on operands that were already loaded."""
+def test_subtract_conserves_loaded_cache(tmp_path: Path) -> None:
+    """subtract() keeps arrays cached on operands that were already loaded."""
     from tests.utils import write_gray_tiff
 
     left = Frame(
@@ -743,7 +887,7 @@ def test_sub_conserves_loaded_cache(tmp_path: Path) -> None:
     _ = left.array
     assert left._array_cache is not None
     assert right._array_cache is None
-    _ = left - right
+    left.subtract(right)
     assert left._array_cache is not None
     assert right._array_cache is None
 
@@ -775,3 +919,10 @@ def test_repr_format(tmp_rgb_tiff: Path) -> None:
     assert "Frame(" in r
     assert str(tmp_rgb_tiff) in r
     assert "downscale_factor=1" in r
+
+
+def test_repr_detached(tmp_rgb_tiff: Path) -> None:
+    """__repr__ shows <detached> for in-memory frames."""
+    proxy = Frame(tmp_rgb_tiff).downscaled_copy(2)
+    r = repr(proxy)
+    assert "<detached>" in r
