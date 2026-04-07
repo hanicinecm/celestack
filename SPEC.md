@@ -132,10 +132,10 @@ Fits and evaluates the spatial transformation model.
 
 Standalone utility function for averaging a list of Frames into a single Frame. Reused for master dark, master light, and the final stack.
 
-- **Signature**: `average_frames(frames: list[Frame], output_path: Path, method: str = "median") → Frame`
+- **Signature**: `average_frames(frames: list[Frame], method: str = "sigma_clip", *, reference_frame: Frame | None = None, band_height: int | None = DEFAULT_BAND_HEIGHT) → Frame`
 - **Methods**: configurable, mean, median, sigma-clipped mean, ...
-- **Output**: writes the averaged result to `output_path` and returns a `Frame` pointing to it.
-- **Memory efficiency**: uses tiled reading (`frame.read_tile()`) to process the stack in spatial chunks without holding all frames in memory simultaneously. Tile size is an internal tunable.
+- **Output**: returns a new detached (in-memory) `Frame` with the averaged pixel data. Metadata is inherited from `reference_frame`, or from the first input frame when `reference_frame` is `None`. The caller persists the result via `frame.save_as(path)`.
+- **Memory efficiency**: uses tiled reading (`frame.read_tile()`) to process the stack in horizontal row-bands so that only a small slice of each frame is held in memory at a time. Band height is an internal tunable.
 - **Ingest note**: all Celestack-written files are TIFF files inheriting some of the original exif data. Proxy files additionally embed Celestack metadata and are fully self-describing.
 
 ### Project

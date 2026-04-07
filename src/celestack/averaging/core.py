@@ -2,13 +2,9 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import numpy as np
-import tifffile
 
 from celestack.averaging._methods import get_methods
-from celestack.frame._metadata import build_tiff_extratags
 from celestack.frame.core import Frame
 from celestack.progress import progress_factory
 
@@ -17,13 +13,12 @@ DEFAULT_BAND_HEIGHT = 256
 
 def average_frames(
     frames: list[Frame],
-    output_path: str | Path,
     method: str = "sigma_clip",
     *,
     reference_frame: Frame | None = None,
     band_height: int | None = DEFAULT_BAND_HEIGHT,
 ) -> Frame:
-    """Average a list of frames into a single output frame.
+    """Average a list of frames into a single detached in-memory frame.
 
     Processes the stack in horizontal row-bands so that only a small
     slice of each frame is held in memory at a time.
@@ -31,17 +26,18 @@ def average_frames(
     Args:
         frames: Input frames to average (must all be TIFFs with the
             same shape and dtype).
-        output_path: Destination path for the averaged TIFF.
         method: Averaging method — ``"median"``, ``"mean"``, or
             ``"sigma_clip"``.
-        reference_frame: Optional frame whose EXIF metadata is
-            inherited by the output file.
-        band_height: Number of rows to process per band.  When
-            ``None``, the entire array is averaged at
-            once.
+        reference_frame: Optional frame whose metadata is inherited by
+            the output frame. Defaults to the first frame in *frames*.
+        band_height: Number of rows to process per band. When
+            ``None``, the entire array is averaged at once.
 
     Returns:
-        A new frame bound to *output_path*.
+        A new detached Frame with the averaged pixel data and metadata
+        inherited from *reference_frame* (or the first input frame).
+        Call :meth:`~celestack.frame.Frame.save_as` on the result to
+        persist it to disk.
 
     Raises:
         ValueError: If *frames* is empty, shapes/dtypes are inconsistent,
@@ -69,8 +65,6 @@ def average_frames(
             raise ValueError(msg)
 
     height, width = ref.shape[0], ref.shape[1]
-    target = Path(output_path).expanduser()
-    target.parent.mkdir(parents=True, exist_ok=True)
 
     if band_height is None:
         band_height = height
@@ -88,20 +82,10 @@ def average_frames(
         bar.update()
     bar.close()
 
-    result = np.concatenate(result_bands, axis=0)
+    result_array = np.concatenate(result_bands, axis=0)
 
-    photometric = "rgb" if result.ndim == 3 and result.shape[2] >= 3 else "minisblack"
-    write_kwargs: dict = {
-        "compression": "zlib",
-        "photometric": photometric,
-    }
-    if reference_frame is not None:
-        meta = reference_frame.metadata
-        if meta.datetime:
-            write_kwargs["datetime"] = str(meta.datetime)
-        extratags = build_tiff_extratags(meta)
-        if extratags:
-            write_kwargs["extratags"] = extratags
-
-    tifffile.imwrite(target, data=result, **write_kwargs)
-    return Frame(target)
+    meta_source = reference_frame if reference_frame is not None else frames[0]
+    out_frame = meta_source._detached_copy()
+    out_frame._array_cache = result_array
+    out_frame._shape = tuple(int(v) for v in result_array.shape)
+    return out_frame
