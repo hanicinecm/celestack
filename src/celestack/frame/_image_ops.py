@@ -26,17 +26,9 @@ def convert_bit_depth(
     array: np.ndarray, source_bit_depth: int, target_bit_depth: int
 ) -> np.ndarray:
     """Convert an array to the requested output bit depth."""
-    if target_bit_depth not in {8, 16, 32}:
+    if target_bit_depth not in {8, 16}:
         msg = f"Unsupported target bit depth: {target_bit_depth}"
         raise ValueError(msg)
-
-    if target_bit_depth == 32:
-        if np.issubdtype(array.dtype, np.floating):
-            return array.astype(np.float32)
-        if array.dtype == np.bool_:
-            return array.astype(np.float32)
-        max_source = float((1 << max(source_bit_depth, 1)) - 1)
-        return (array.astype(np.float32) / max_source).astype(np.float32)
 
     max_target = float((1 << target_bit_depth) - 1)
     out_dtype = np.uint8 if target_bit_depth == 8 else np.uint16

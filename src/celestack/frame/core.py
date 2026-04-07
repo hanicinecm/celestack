@@ -57,8 +57,10 @@ class Frame:
         self._backend = backends[suffix]
         info = self._backend.inspect(self._path)
         self._shape = info.shape
-        self._dtype = info.dtype
         self._bit_depth = info.bit_depth
+        if self._bit_depth not in {8, 16}:
+            msg = f"Unsupported bit depth: {self._bit_depth} (supported: 8, 16)"
+            raise ValueError(msg)
 
         celestack = info.celestack_metadata
         self._downscale_factor = celestack.downscale_factor
@@ -73,7 +75,6 @@ class Frame:
         frame._path = None
         frame._backend = self._backend
         frame._shape = self._shape
-        frame._dtype = self._dtype
         frame._bit_depth = self._bit_depth
         frame._downscale_factor = self._downscale_factor
         frame._timestamp_override = self._timestamp_override
@@ -99,11 +100,6 @@ class Frame:
     def shape(self) -> tuple[int, ...]:
         """Return the image dimensions discovered during inspection."""
         return self._shape
-
-    @property
-    def dtype(self) -> np.dtype:
-        """Return the pixel data type discovered during inspection."""
-        return self._dtype
 
     @property
     def bit_depth(self) -> int:
@@ -134,12 +130,26 @@ class Frame:
 
     @property
     def array(self) -> np.ndarray:
-        """Return image pixels, loading them lazily on first access."""
+        """Return image pixels, loading them lazily on first access.
+
+        Raises:
+            ValueError: If the frame has no backing path and no cached array.
+            TypeError: If the loaded array dtype does not match the expected
+                dtype for the frame's bit depth.
+        """
         if self._array_cache is None:
             if self._path is None:
                 msg = "In-memory frame has no backing path and no cached array"
                 raise ValueError(msg)
-            self._array_cache = self._backend.load_array(self._path)
+            loaded = self._backend.load_array(self._path)
+            expected = np.dtype(f"uint{self._bit_depth}")
+            if loaded.dtype != expected:
+                msg = (
+                    f"Loaded array dtype {loaded.dtype!r} does not match "
+                    f"expected {expected!r} for bit depth {self._bit_depth}"
+                )
+                raise TypeError(msg)
+            self._array_cache = loaded
         return self._array_cache
 
     def load(self) -> None:
@@ -262,7 +272,6 @@ class Frame:
             result = self._detached_copy()
             result._array_cache = subtract_arrays(self.array, other.array)
             result._shape = tuple(int(v) for v in result._array_cache.shape)
-            result._dtype = np.dtype(result._array_cache.dtype)
         return result
 
     def _validate_similarity(self, other: Frame) -> None:
@@ -278,12 +287,6 @@ class Frame:
             msg = (
                 f"Shape mismatch: left frame has shape {self.shape}, "
                 f"right frame has shape {other.shape}"
-            )
-            raise ValueError(msg)
-        if self.dtype != other.dtype:
-            msg = (
-                f"Dtype mismatch: left frame has dtype {self.dtype}, "
-                f"right frame has dtype {other.dtype}"
             )
             raise ValueError(msg)
         if self.bit_depth != other.bit_depth:
@@ -337,7 +340,6 @@ class Frame:
         result = self._detached_copy()
         result._array_cache = converted
         result._shape = tuple(int(v) for v in converted.shape)
-        result._dtype = np.dtype(converted.dtype)
         result._bit_depth = bit_depth
         result._downscale_factor = downscale_factor
         return result

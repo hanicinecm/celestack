@@ -71,7 +71,7 @@ def test_convert_bit_depth_unsupported_raises() -> None:
     """Unsupported target bit depth raises ValueError."""
     arr = np.zeros((2, 2), dtype=np.uint8)
     with pytest.raises(ValueError, match="Unsupported target bit depth"):
-        convert_bit_depth(arr, 8, 12)
+        convert_bit_depth(arr, 8, 32)
 
 
 def test_convert_bit_depth_bool_to_uint8() -> None:
@@ -81,24 +81,6 @@ def test_convert_bit_depth_bool_to_uint8() -> None:
     assert result.dtype == np.uint8
     assert result[0, 0] == 255
     assert result[0, 1] == 0
-
-
-def test_convert_bit_depth_bool_to_float32() -> None:
-    """Boolean array converts to float32."""
-    arr = np.array([[True, False]])
-    result = convert_bit_depth(arr, 1, 32)
-    assert result.dtype == np.float32
-    assert result[0, 0] == 1.0
-    assert result[0, 1] == 0.0
-
-
-def test_convert_bit_depth_float_to_uint8() -> None:
-    """Float array normalizes to max value when converting to uint8."""
-    arr = np.array([[0.0, 0.5, 1.0]], dtype=np.float64)
-    result = convert_bit_depth(arr, 32, 8)
-    assert result.dtype == np.uint8
-    assert result[0, 0] == 0
-    assert result[0, 2] == 255
 
 
 # --- subtract_arrays ---

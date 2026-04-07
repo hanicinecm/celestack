@@ -49,7 +49,6 @@ class TiffBackend:
                 bit_depth = np.dtype(page.dtype).itemsize * 8
             info = FrameInfo(
                 bit_depth=int(bit_depth),
-                dtype=np.dtype(page.dtype),
                 shape=tuple(int(v) for v in page.shape),
                 celestack_metadata=parse_celestack_metadata(page),
             )
@@ -79,8 +78,6 @@ class PillowBackend:
         "I;16L": 16,
         "I;16B": 16,
         "I;16N": 16,
-        "I": 32,
-        "F": 32,
     }
 
     def inspect(self, path: Path) -> FrameInfo:
@@ -95,7 +92,6 @@ class PillowBackend:
                 bit_depth = arr.dtype.itemsize * 8
             return FrameInfo(
                 bit_depth=bit_depth,
-                dtype=arr.dtype,
                 shape=shape,
                 celestack_metadata=CelestackMetadata(),
             )

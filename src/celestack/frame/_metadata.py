@@ -10,7 +10,6 @@ from pathlib import Path
 from typing import Any
 
 import exifread
-import numpy as np
 import tifffile
 
 from celestack.frame._constants import CELESTACK_KEY
@@ -84,7 +83,6 @@ class FrameInfo:
     """Metadata discovered during lightweight frame inspection."""
 
     bit_depth: int
-    dtype: np.dtype
     shape: tuple[int, ...]
     celestack_metadata: CelestackMetadata
 

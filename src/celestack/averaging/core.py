@@ -62,8 +62,10 @@ def average_frames(
         if f.shape != ref.shape:
             msg = f"Shape mismatch: {f!r} has shape {f.shape}, expected {ref.shape}"
             raise ValueError(msg)
-        if f.dtype != ref.dtype:
-            msg = f"Dtype mismatch: {f!r} has dtype {f.dtype}, expected {ref.dtype}"
+        if f.bit_depth != ref.bit_depth:
+            msg = (
+                f"Bit depth mismatch: {f!r} has {f.bit_depth}, expected {ref.bit_depth}"
+            )
             raise ValueError(msg)
 
     height, width = ref.shape[0], ref.shape[1]

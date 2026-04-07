@@ -92,6 +92,16 @@ def test_external_file_downscale_factor_is_1(
     assert Frame(tmp_rgb_jpeg).downscale_factor == 1
 
 
+def test_unsupported_bit_depth_raises(tmp_path: Path) -> None:
+    """Frame raises ValueError for images with unsupported bit depth."""
+    import tifffile
+
+    path = tmp_path / "deep.tif"
+    tifffile.imwrite(path, np.zeros((4, 4), dtype=np.uint32))
+    with pytest.raises(ValueError, match="Unsupported bit depth"):
+        Frame(path)
+
+
 def test_path_raises_for_detached_frame(tmp_rgb_tiff: Path, tmp_path: Path) -> None:
     """path property raises AttributeError for a detached (in-memory) frame."""
     frame = Frame(tmp_rgb_tiff)
@@ -365,7 +375,6 @@ def test_subtract_returns_detached_frame(tmp_gray_tiff: Path, tmp_path: Path) ->
     assert isinstance(result, Frame)
     assert result._path is None
     assert result.shape == light.shape
-    assert result.dtype == light.dtype
     assert result.bit_depth == light.bit_depth
 
 
@@ -491,23 +500,6 @@ def test_subtract_shape_mismatch_raises(tmp_path: Path) -> None:
         Frame(left_path).subtract(Frame(right_path))
 
 
-def test_subtract_dtype_mismatch_raises(tmp_path: Path) -> None:
-    """Frames with different dtypes cannot be subtracted."""
-    from tests.utils import write_gray_tiff
-
-    left_path = write_gray_tiff(
-        tmp_path / "left.tif",
-        np.zeros((10, 10), dtype=np.uint16),
-    )
-    right_path = write_gray_tiff(
-        tmp_path / "right.tif",
-        np.zeros((10, 10), dtype=np.uint8),
-    )
-
-    with pytest.raises(ValueError, match="Dtype mismatch"):
-        Frame(left_path).subtract(Frame(right_path))
-
-
 def test_subtract_downscale_factor_mismatch_raises(
     tmp_rgb_tiff: Path, tmp_path: Path
 ) -> None:
@@ -540,19 +532,12 @@ def test_subtract_bit_depth_mismatch_raises(tmp_path: Path) -> None:
         tmp_path / "left.tif",
         np.zeros((10, 10), dtype=np.uint16),
     )
-    # Write a uint16 array but mark it as 8-bit by using uint8 values written
-    # as uint8 — the easiest way is a separate uint8 file.
     right_path = write_gray_tiff(
         tmp_path / "right.tif",
         np.zeros((10, 10), dtype=np.uint8),
     )
-    left = Frame(left_path)
-    right = Frame(right_path)
-    # Force matching dtype so only bit_depth differs — patch directly.
-    right._dtype = left._dtype
     with pytest.raises(ValueError, match="Bit depth mismatch"):
-        left.subtract(right)
-
+        Frame(left_path).subtract(Frame(right_path))
 
 
 def test_subtract_inplace_conserves_other_cache(tmp_path: Path) -> None:
@@ -683,13 +668,6 @@ def test_downscaled_copy_to_16bit(tmp_rgb_tiff: Path) -> None:
     proxy = Frame(tmp_rgb_tiff).downscaled_copy(downscale_factor=2, bit_depth=16)
     assert proxy.bit_depth == 16
     assert proxy.array.dtype == np.uint16
-
-
-def test_downscaled_copy_to_32bit(tmp_rgb_tiff: Path) -> None:
-    """16-bit input downscaled to 32-bit produces float32 output."""
-    proxy = Frame(tmp_rgb_tiff).downscaled_copy(downscale_factor=2, bit_depth=32)
-    assert proxy.bit_depth == 32
-    assert proxy.array.dtype == np.float32
 
 
 def test_downscaled_copy_grayscale_input(tmp_gray_tiff: Path) -> None:
