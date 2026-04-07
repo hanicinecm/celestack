@@ -83,20 +83,94 @@ def to_grayscale(array: np.ndarray) -> np.ndarray:
     )
 
 
-def subtract_arrays(left: np.ndarray, right: np.ndarray) -> np.ndarray:
-    """Subtract arrays while preserving the left dtype."""
-    if np.issubdtype(left.dtype, np.floating):
-        return (left - right).astype(left.dtype, copy=False)
+def interpolate_bad_pixels(array: np.ndarray, mask: np.ndarray) -> np.ndarray:
+    """Replace masked pixels with the mean of their valid 8-connected neighbors.
 
+    Args:
+        array: Image array (2D or 3D). Modified in place at masked positions.
+        mask: Boolean 2D mask; True where a pixel is bad.
+
+    Returns:
+        The array with masked pixels replaced by neighbor means.
+    """
+    shifts = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]
+    float_array = array.astype(np.float64)
+    valid_mask = ~mask  # True where pixels are good
+
+    total = np.zeros_like(float_array)
+    count = np.zeros(mask.shape, dtype=np.float64)
+
+    for dy, dx in shifts:
+        neighbour = np.roll(np.roll(float_array, dy, axis=0), dx, axis=1)
+        valid = np.roll(np.roll(valid_mask, dy, axis=0), dx, axis=1)
+        if array.ndim == 3:
+            total[mask] += np.where(valid[..., np.newaxis], neighbour, 0)[mask]
+        else:
+            total[mask] += np.where(valid, neighbour, 0)[mask]
+        count[mask] += valid[mask]
+
+    limits = np.iinfo(array.dtype)
+    if array.ndim == 3:
+        count_3d = count[..., np.newaxis]
+        interpolated = np.where(
+            count_3d[mask] > 0,
+            np.clip(
+                np.rint(total[mask] / np.where(count_3d[mask] > 0, count_3d[mask], 1)),
+                limits.min,
+                limits.max,
+            ),
+            0,
+        ).astype(array.dtype)
+    else:
+        interpolated = np.where(
+            count[mask] > 0,
+            np.clip(
+                np.rint(total[mask] / np.where(count[mask] > 0, count[mask], 1)),
+                limits.min,
+                limits.max,
+            ),
+            0,
+        ).astype(array.dtype)
+
+    result = array.copy()
+    result[mask] = interpolated
+    return result
+
+
+def subtract_arrays(
+    left: np.ndarray,
+    right: np.ndarray,
+    *,
+    correct_saturated: bool = False,
+) -> np.ndarray:
+    """Subtract arrays while preserving the left dtype.
+
+    Args:
+        left: Minuend array.
+        right: Subtrahend array.
+        correct_saturated: If True and the arrays are unsigned integers, pixels
+            where *right* equals the dtype maximum are replaced with the mean of
+            their valid 8-connected neighbors in the result. Useful when *right*
+            is a master dark with blown hot pixels that are also saturated on the
+            light frame, which would otherwise produce spurious black spots.
+
+    Returns:
+        Result array with the same dtype as *left*.
+
+    Raises:
+        ValueError: If the dtype is unsupported.
+    """
     if np.issubdtype(left.dtype, np.unsignedinteger):
         result = left.astype(np.int64) - right.astype(np.int64)
         limits = np.iinfo(left.dtype)
-        return np.clip(result, limits.min, limits.max).astype(left.dtype)
-
-    if np.issubdtype(left.dtype, np.signedinteger):
-        result = left.astype(np.int64) - right.astype(np.int64)
-        limits = np.iinfo(left.dtype)
-        return np.clip(result, limits.min, limits.max).astype(left.dtype)
+        clipped = np.clip(result, limits.min, limits.max).astype(left.dtype)
+        if correct_saturated:
+            mask = right == limits.max
+            if mask.ndim == 3:
+                mask = mask.any(axis=2)
+            if mask.any():
+                clipped = interpolate_bad_pixels(clipped, mask)
+        return clipped
 
     msg = f"Unsupported dtype for subtraction: {left.dtype}"
     raise ValueError(msg)

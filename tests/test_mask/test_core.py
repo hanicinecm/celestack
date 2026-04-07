@@ -212,9 +212,7 @@ def test_mask_save_as_conserves_cache(gray_mask_path: Path, tmp_path: Path) -> N
     assert mask._array_cache is None
 
 
-def test_mask_save_as_overwrite_false_raises(
-    gray_mask: Mask, tmp_path: Path
-) -> None:
+def test_mask_save_as_overwrite_false_raises(gray_mask: Mask, tmp_path: Path) -> None:
     """save_as() raises FileExistsError when destination exists and overwrite is False."""
     out = tmp_path / "out.tif"
     gray_mask.save_as(out)
@@ -222,9 +220,7 @@ def test_mask_save_as_overwrite_false_raises(
         gray_mask.save_as(out)
 
 
-def test_mask_save_as_overwrite_true_succeeds(
-    gray_mask: Mask, tmp_path: Path
-) -> None:
+def test_mask_save_as_overwrite_true_succeeds(gray_mask: Mask, tmp_path: Path) -> None:
     """save_as() succeeds when overwrite=True even if the file exists."""
     out = tmp_path / "out.tif"
     gray_mask.save_as(out)

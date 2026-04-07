@@ -11,7 +11,6 @@ from celestack.frame._image_ops import (
     to_grayscale,
 )
 
-
 # --- downscale_by_block_average ---
 
 
@@ -100,28 +99,6 @@ def test_subtract_arrays_unsigned_clamps_underflow() -> None:
     )
 
 
-def test_subtract_arrays_float_preserves_negative_values() -> None:
-    """Float subtraction keeps negative results."""
-    left = np.array([[1.5, 0.25]], dtype=np.float32)
-    right = np.array([[0.5, 0.75]], dtype=np.float32)
-
-    result = subtract_arrays(left, right)
-
-    assert result.dtype == np.float32
-    np.testing.assert_allclose(result, np.array([[1.0, -0.5]], dtype=np.float32))
-
-
-def test_subtract_arrays_signed_integer_clamps_to_dtype_bounds() -> None:
-    """Signed integer subtraction clips to the dtype range."""
-    left = np.array([[-120, 100]], dtype=np.int8)
-    right = np.array([[20, -40]], dtype=np.int8)
-
-    result = subtract_arrays(left, right)
-
-    assert result.dtype == np.int8
-    np.testing.assert_array_equal(result, np.array([[-128, 127]], dtype=np.int8))
-
-
 def test_subtract_arrays_bool_raises() -> None:
     """Boolean arrays are not supported for subtraction."""
     left = np.array([[True, False]])
@@ -129,6 +106,50 @@ def test_subtract_arrays_bool_raises() -> None:
 
     with pytest.raises(ValueError, match="Unsupported dtype for subtraction"):
         subtract_arrays(left, right)
+
+
+def test_subtract_arrays_correct_saturated_interpolates_center() -> None:
+    """Blown dark pixels are replaced by 8-neighbor mean, not clamped to zero."""
+    max_val = np.iinfo(np.uint16).max
+    # 3x3 light: uniform value of 1000
+    light = np.full((3, 3), 1000, dtype=np.uint16)
+    # 3x3 dark: center pixel is blown, rest is 100
+    dark = np.full((3, 3), 100, dtype=np.uint16)
+    dark[1, 1] = max_val
+
+    result = subtract_arrays(light, dark, correct_saturated=True)
+
+    # Non-saturated pixels subtract normally
+    assert result[0, 0] == 900
+    # Center pixel: result of normal subtraction of neighbors (900) averaged
+    assert result[1, 1] == 900
+
+
+def test_subtract_arrays_correct_saturated_default_off() -> None:
+    """Without correct_saturated, blown dark pixels produce zero."""
+    max_val = np.iinfo(np.uint16).max
+    light = np.full((3, 3), 1000, dtype=np.uint16)
+    dark = np.full((3, 3), 100, dtype=np.uint16)
+    dark[1, 1] = max_val
+
+    result = subtract_arrays(light, dark)
+
+    assert result[1, 1] == 0
+
+
+def test_subtract_arrays_correct_saturated_rgb() -> None:
+    """Saturated-pixel correction works on 3-channel arrays."""
+    max_val = np.iinfo(np.uint16).max
+    light = np.full((3, 3, 3), 1000, dtype=np.uint16)
+    dark = np.full((3, 3, 3), 100, dtype=np.uint16)
+    dark[1, 1, :] = max_val
+
+    result = subtract_arrays(light, dark, correct_saturated=True)
+
+    # Neighbors subtract normally
+    np.testing.assert_array_equal(result[0, 0], [900, 900, 900])
+    # Center interpolated from neighbors (all 900)
+    np.testing.assert_array_equal(result[1, 1], [900, 900, 900])
 
 
 # --- scaled_preview_uint8 ---

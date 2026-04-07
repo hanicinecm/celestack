@@ -234,12 +234,30 @@ class Frame:
         self._backend = backends[target.suffix.lower()]
 
     @overload
-    def subtract(self, other: Frame, *, inplace: Literal[False] = ...) -> Frame: ...
+    def subtract(
+        self,
+        other: Frame,
+        *,
+        inplace: Literal[False] = ...,
+        correct_saturated: bool = ...,
+    ) -> Frame: ...
 
     @overload
-    def subtract(self, other: Frame, *, inplace: Literal[True]) -> None: ...
+    def subtract(
+        self,
+        other: Frame,
+        *,
+        inplace: Literal[True],
+        correct_saturated: bool = ...,
+    ) -> None: ...
 
-    def subtract(self, other: Frame, *, inplace: bool = False) -> Frame | None:
+    def subtract(
+        self,
+        other: Frame,
+        *,
+        inplace: bool = False,
+        correct_saturated: bool = False,
+    ) -> Frame | None:
         """Subtract *other* from this frame pixel-wise, saturating at zero.
 
         The array cache is conserved on both operands when not in-place: if
@@ -252,6 +270,11 @@ class Frame:
                 downscale factor.
             inplace: If True, update self in place and return None. If False
                 (default), return a new detached Frame.
+            correct_saturated: If True, pixels where *other* is at the maximum
+                dtype value (blown hot pixels in the dark frame) are replaced in
+                the result with the mean of their valid 8-connected neighbors
+                instead of clipping to zero. Useful when subtracting a master
+                dark that contains hot pixels also saturated on the light frame.
 
         Returns:
             A new detached Frame when *inplace* is False, otherwise None.
@@ -263,14 +286,18 @@ class Frame:
 
         if inplace:
             with other._conserve_cache():
-                result_array = subtract_arrays(self.array, other.array)
+                result_array = subtract_arrays(
+                    self.array, other.array, correct_saturated=correct_saturated
+                )
             self._array_cache = result_array
             self._path = None
             return None
 
         with self._conserve_cache(), other._conserve_cache():
             result = self._detached_copy()
-            result._array_cache = subtract_arrays(self.array, other.array)
+            result._array_cache = subtract_arrays(
+                self.array, other.array, correct_saturated=correct_saturated
+            )
             result._shape = tuple(int(v) for v in result._array_cache.shape)
         return result
 
