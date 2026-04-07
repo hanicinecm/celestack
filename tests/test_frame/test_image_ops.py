@@ -152,6 +152,37 @@ def test_subtract_arrays_correct_saturated_rgb() -> None:
     np.testing.assert_array_equal(result[1, 1], [900, 900, 900])
 
 
+def test_subtract_arrays_correct_saturated_single_channel_triggers() -> None:
+    """A pixel is corrected when any one RGB channel is saturated, not just all."""
+    max_val = np.iinfo(np.uint16).max
+    light = np.full((3, 3, 3), 1000, dtype=np.uint16)
+    dark = np.full((3, 3, 3), 100, dtype=np.uint16)
+    dark[1, 1, 0] = max_val  # only the red channel is blown
+
+    result = subtract_arrays(light, dark, correct_saturated=True)
+
+    # The whole pixel is interpolated from neighbors (all 900)
+    np.testing.assert_array_equal(result[1, 1], [900, 900, 900])
+
+
+def test_subtract_arrays_correct_saturated_corner_no_wraparound() -> None:
+    """Corner saturated pixels use only in-bounds neighbors, no edge wraparound."""
+    max_val = np.iinfo(np.uint16).max
+    # 4x4 light: uniform 1000; dark: uniform 100 except top-left corner is blown
+    light = np.full((4, 4), 1000, dtype=np.uint16)
+    dark = np.full((4, 4), 100, dtype=np.uint16)
+    dark[0, 0] = max_val
+
+    result = subtract_arrays(light, dark, correct_saturated=True)
+
+    # Corner pixel's only valid neighbors are (0,1), (1,0), (1,1) — all give 900
+    assert result[0, 0] == 900
+    # Pixels on the opposite edge must be unaffected (no wraparound)
+    assert result[3, 3] == 900
+    assert result[0, 3] == 900
+    assert result[3, 0] == 900
+
+
 # --- scaled_preview_uint8 ---
 
 

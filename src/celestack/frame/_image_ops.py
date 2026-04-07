@@ -86,54 +86,41 @@ def to_grayscale(array: np.ndarray) -> np.ndarray:
 def interpolate_bad_pixels(array: np.ndarray, mask: np.ndarray) -> np.ndarray:
     """Replace masked pixels with the mean of their valid 8-connected neighbors.
 
+    Operates only on the small set of masked pixel coordinates rather than
+    rolling the full image array, so cost scales with the number of bad pixels,
+    not with image size.
+
     Args:
-        array: Image array (2D or 3D). Modified in place at masked positions.
+        array: Image array (2D or 3D).
         mask: Boolean 2D mask; True where a pixel is bad.
 
     Returns:
-        The array with masked pixels replaced by neighbor means.
+        A copy of *array* with masked pixels replaced by neighbor means.
+        Pixels with no valid neighbors are set to zero.
     """
-    shifts = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]
-    float_array = array.astype(np.float64)
-    valid_mask = ~mask  # True where pixels are good
-
-    total = np.zeros_like(float_array)
-    count = np.zeros(mask.shape, dtype=np.float64)
-
-    for dy, dx in shifts:
-        neighbour = np.roll(np.roll(float_array, dy, axis=0), dx, axis=1)
-        valid = np.roll(np.roll(valid_mask, dy, axis=0), dx, axis=1)
-        if array.ndim == 3:
-            total[mask] += np.where(valid[..., np.newaxis], neighbour, 0)[mask]
-        else:
-            total[mask] += np.where(valid, neighbour, 0)[mask]
-        count[mask] += valid[mask]
-
-    limits = np.iinfo(array.dtype)
-    if array.ndim == 3:
-        count_3d = count[..., np.newaxis]
-        interpolated = np.where(
-            count_3d[mask] > 0,
-            np.clip(
-                np.rint(total[mask] / np.where(count_3d[mask] > 0, count_3d[mask], 1)),
-                limits.min,
-                limits.max,
-            ),
-            0,
-        ).astype(array.dtype)
-    else:
-        interpolated = np.where(
-            count[mask] > 0,
-            np.clip(
-                np.rint(total[mask] / np.where(count[mask] > 0, count[mask], 1)),
-                limits.min,
-                limits.max,
-            ),
-            0,
-        ).astype(array.dtype)
-
     result = array.copy()
-    result[mask] = interpolated
+    ys, xs = np.where(mask)
+    if ys.size == 0:
+        return result
+
+    h, w = array.shape[:2]
+    limits = np.iinfo(array.dtype)
+    shifts = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]
+
+    for y, x in zip(ys, xs):
+        neighbour_vals = [
+            array[y + dy, x + dx]
+            for dy, dx in shifts
+            if 0 <= y + dy < h and 0 <= x + dx < w and not mask[y + dy, x + dx]
+        ]
+        if neighbour_vals:
+            mean = np.mean(neighbour_vals, axis=0)
+            result[y, x] = np.clip(np.rint(mean), limits.min, limits.max).astype(
+                array.dtype
+            )
+        else:
+            result[y, x] = 0
+
     return result
 
 
@@ -149,10 +136,11 @@ def subtract_arrays(
         left: Minuend array.
         right: Subtrahend array.
         correct_saturated: If True and the arrays are unsigned integers, pixels
-            where *right* equals the dtype maximum are replaced with the mean of
-            their valid 8-connected neighbors in the result. Useful when *right*
-            is a master dark with blown hot pixels that are also saturated on the
-            light frame, which would otherwise produce spurious black spots.
+            where *right* is at the dtype maximum (for RGB: where any channel
+            is at maximum) are replaced with the mean of their valid
+            8-connected neighbors in the result. Useful when *right* is a
+            master dark with blown hot pixels that would otherwise produce
+            spurious black spots.
 
     Returns:
         Result array with the same dtype as *left*.
