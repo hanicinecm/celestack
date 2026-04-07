@@ -102,10 +102,10 @@ def test_unsupported_bit_depth_raises(tmp_path: Path) -> None:
         Frame(path)
 
 
-def test_path_raises_for_detached_frame(tmp_rgb_tiff: Path, tmp_path: Path) -> None:
+def test_path_raises_for_detached_frame(tmp_rgb_tiff: Path) -> None:
     """path property raises AttributeError for a detached (in-memory) frame."""
     frame = Frame(tmp_rgb_tiff)
-    detached = frame.subtract(Frame(tmp_rgb_tiff))
+    detached = frame.downscaled_copy(1)
     with pytest.raises(AttributeError, match="not backed by a file"):
         _ = detached.path
 
@@ -361,190 +361,127 @@ def test_save_as_proxy_without_timestamp_omits_timestamp(
 # --- Subtraction ---
 
 
-def test_subtract_returns_detached_frame(tmp_gray_tiff: Path, tmp_path: Path) -> None:
-    """subtract() returns a pathless in-memory frame."""
-    dark_path = tmp_path / "dark.tif"
-    dark_array = np.full((IMG_H, IMG_W), fill_value=10, dtype=np.uint16)
+def test_subtract_dark_modifies_self(tmp_path: Path) -> None:
+    """subtract_dark() subtracts into self in place and returns None."""
     from tests.utils import write_gray_tiff
 
-    dark = Frame(write_gray_tiff(dark_path, dark_array))
-    light = Frame(tmp_gray_tiff)
-
-    result = light.subtract(dark)
-
-    assert isinstance(result, Frame)
-    assert result._path is None
-    assert result.shape == light.shape
-    assert result.bit_depth == light.bit_depth
-
-
-def test_subtract_subtracts_pixels_and_clamps_unsigned(tmp_path: Path) -> None:
-    """Unsigned subtraction is saturating at zero."""
-    from tests.utils import write_gray_tiff
-
-    left_path = write_gray_tiff(
-        tmp_path / "left.tif",
+    light_path = write_gray_tiff(
+        tmp_path / "light.tif",
         np.array([[20, 5], [100, 0]], dtype=np.uint16),
     )
-    right_path = write_gray_tiff(
-        tmp_path / "right.tif",
+    dark_path = write_gray_tiff(
+        tmp_path / "dark.tif",
         np.array([[3, 9], [20, 1]], dtype=np.uint16),
     )
+    light = Frame(light_path)
+    result = light.subtract_dark(Frame(dark_path))
 
-    result = Frame(left_path).subtract(Frame(right_path))
-
+    assert result is None
     np.testing.assert_array_equal(
-        result.array,
+        light.array,
         np.array([[17, 0], [80, 0]], dtype=np.uint16),
     )
 
 
-def test_subtract_correct_saturated_interpolates_blown_dark_pixel(
-    tmp_path: Path,
-) -> None:
-    """Burned dark pixels are interpolated from neighbors when correct_saturated=True."""
+def test_subtract_dark_hot_pixel_clamps_to_zero(tmp_path: Path) -> None:
+    """subtract_dark does not interpolate hot pixels; they clamp to zero."""
     from tests.utils import write_gray_tiff
 
-    max_val = np.iinfo(np.uint16).max
     light_arr = np.full((3, 3), 1000, dtype=np.uint16)
     dark_arr = np.full((3, 3), 100, dtype=np.uint16)
-    dark_arr[1, 1] = max_val  # one blown hot pixel in the dark frame
+    dark_arr[1, 1] = 20000  # hot pixel exceeds light value
 
     light = Frame(write_gray_tiff(tmp_path / "light.tif", light_arr))
     dark = Frame(write_gray_tiff(tmp_path / "dark.tif", dark_arr))
 
-    corrected = light.subtract(dark, correct_saturated=True)
-    uncorrected = light.subtract(dark, correct_saturated=False)
+    light.subtract_dark(dark)
 
-    # Non-blown pixels subtract normally in both cases
-    assert corrected.array[0, 0] == 900
-    assert uncorrected.array[0, 0] == 900
-
-    # Blown pixel: corrected interpolates from neighbors (all 900),
-    # uncorrected clamps to zero
-    assert corrected.array[1, 1] == 900
-    assert uncorrected.array[1, 1] == 0
+    assert light.array[0, 0] == 900
+    assert light.array[1, 1] == 0  # clamped, not interpolated
 
 
-def test_subtract_correct_saturated_is_default(tmp_path: Path) -> None:
-    """correct_saturated=True is the default for Frame.subtract."""
+def test_subtract_dark_detaches_from_path(tmp_path: Path) -> None:
+    """subtract_dark() detaches the frame from its backing path."""
     from tests.utils import write_gray_tiff
 
-    max_val = np.iinfo(np.uint16).max
-    light_arr = np.full((3, 3), 1000, dtype=np.uint16)
-    dark_arr = np.full((3, 3), 100, dtype=np.uint16)
-    dark_arr[1, 1] = max_val
+    light_path = write_gray_tiff(
+        tmp_path / "light.tif",
+        np.full((24, 32), 100, dtype=np.uint16),
+    )
+    dark_path = write_gray_tiff(
+        tmp_path / "dark.tif",
+        np.full((24, 32), 10, dtype=np.uint16),
+    )
+    light = Frame(light_path)
+    light.subtract_dark(Frame(dark_path))
+    assert light._path is None
 
-    light = Frame(write_gray_tiff(tmp_path / "light.tif", light_arr))
-    dark = Frame(write_gray_tiff(tmp_path / "dark.tif", dark_arr))
 
-    result = light.subtract(dark)
-
-    assert result.array[1, 1] == 900
-
-
-def test_subtract_inherits_left_metadata_and_timestamp(
+def test_subtract_dark_inherits_metadata_and_timestamp(
     tmp_rgb_tiff: Path, tmp_path: Path
 ) -> None:
-    """Result inherits metadata and timestamp from the left frame."""
+    """Metadata and timestamp are preserved after in-place dark subtraction."""
     from tests.utils import write_rgb_tiff
 
-    right_path = write_rgb_tiff(
-        tmp_path / "right.tif",
+    dark_path = write_rgb_tiff(
+        tmp_path / "dark.tif",
         np.zeros((IMG_H, IMG_W, 3), dtype=np.uint16),
     )
-    left = Frame(tmp_rgb_tiff)
-    left.timestamp = 123.0
+    light = Frame(tmp_rgb_tiff)
+    light.timestamp = 123.0
+    original_meta = light.metadata
 
-    result = left.subtract(Frame(right_path))
+    light.subtract_dark(Frame(dark_path))
 
-    assert result.metadata.camera_make == left.metadata.camera_make
-    assert result.metadata.camera_model == left.metadata.camera_model
-    assert result.metadata.datetime == left.metadata.datetime
-    assert result.metadata.exposure == left.metadata.exposure
-    assert result.metadata.f_number == left.metadata.f_number
-    assert result.metadata.iso == left.metadata.iso
-    assert result.metadata.focal_length == left.metadata.focal_length
-    assert result.metadata.lens_model == left.metadata.lens_model
-    assert result.timestamp == pytest.approx(123.0)
+    assert light.metadata.camera_make == original_meta.camera_make
+    assert light.metadata.camera_model == original_meta.camera_model
+    assert light.metadata.datetime == original_meta.datetime
+    assert light.metadata.exposure == original_meta.exposure
+    assert light.metadata.f_number == original_meta.f_number
+    assert light.metadata.iso == original_meta.iso
+    assert light.metadata.focal_length == original_meta.focal_length
+    assert light.metadata.lens_model == original_meta.lens_model
+    assert light.timestamp == pytest.approx(123.0)
 
 
-def test_subtract_result_can_be_saved(tmp_gray_tiff: Path, tmp_path: Path) -> None:
-    """A subtraction result can be persisted via save_as."""
+def test_subtract_dark_result_can_be_saved(tmp_gray_tiff: Path, tmp_path: Path) -> None:
+    """A dark-subtracted frame can be persisted via save_as."""
     from tests.utils import write_gray_tiff
 
     dark_path = write_gray_tiff(
         tmp_path / "dark.tif",
         np.full((IMG_H, IMG_W), fill_value=1, dtype=np.uint16),
     )
-    result = Frame(tmp_gray_tiff).subtract(Frame(dark_path))
-    expected = result.array.copy()
+    light = Frame(tmp_gray_tiff)
+    light.subtract_dark(Frame(dark_path))
+    expected = light.array.copy()
 
     dest = tmp_path / "subtracted.tif"
-    result.save_as(dest)
+    light.save_as(dest)
 
-    assert result._path == dest
+    assert light._path == dest
     reloaded = Frame(dest)
     np.testing.assert_array_equal(reloaded.array, expected)
 
 
-def test_subtract_inplace_modifies_self(tmp_path: Path) -> None:
-    """inplace=True subtracts into self and returns None."""
-    from tests.utils import write_gray_tiff
-
-    left_path = write_gray_tiff(
-        tmp_path / "left.tif",
-        np.array([[20, 5], [100, 0]], dtype=np.uint16),
-    )
-    right_path = write_gray_tiff(
-        tmp_path / "right.tif",
-        np.array([[3, 9], [20, 1]], dtype=np.uint16),
-    )
-    left = Frame(left_path)
-    result = left.subtract(Frame(right_path), inplace=True)
-
-    assert result is None
-    np.testing.assert_array_equal(
-        left.array,
-        np.array([[17, 0], [80, 0]], dtype=np.uint16),
-    )
-
-
-def test_subtract_inplace_detaches_from_path(tmp_path: Path) -> None:
-    """inplace=True detaches the frame from its backing path."""
-    from tests.utils import write_gray_tiff
-
-    left_path = write_gray_tiff(
-        tmp_path / "left.tif",
-        np.full((24, 32), 100, dtype=np.uint16),
-    )
-    right_path = write_gray_tiff(
-        tmp_path / "right.tif",
-        np.full((24, 32), 10, dtype=np.uint16),
-    )
-    left = Frame(left_path)
-    left.subtract(Frame(right_path), inplace=True)
-    assert left._path is None
-
-
-def test_subtract_shape_mismatch_raises(tmp_path: Path) -> None:
+def test_subtract_dark_shape_mismatch_raises(tmp_path: Path) -> None:
     """Frames with different shapes cannot be subtracted."""
     from tests.utils import write_gray_tiff
 
-    left_path = write_gray_tiff(
-        tmp_path / "left.tif",
+    light_path = write_gray_tiff(
+        tmp_path / "light.tif",
         np.zeros((10, 10), dtype=np.uint16),
     )
-    right_path = write_gray_tiff(
-        tmp_path / "right.tif",
+    dark_path = write_gray_tiff(
+        tmp_path / "dark.tif",
         np.zeros((10, 11), dtype=np.uint16),
     )
 
     with pytest.raises(ValueError, match="Shape mismatch"):
-        Frame(left_path).subtract(Frame(right_path))
+        Frame(light_path).subtract_dark(Frame(dark_path))
 
 
-def test_subtract_downscale_factor_mismatch_raises(
+def test_subtract_dark_downscale_factor_mismatch_raises(
     tmp_rgb_tiff: Path, tmp_path: Path
 ) -> None:
     """Frames with different downscale factors cannot be subtracted."""
@@ -554,58 +491,144 @@ def test_subtract_downscale_factor_mismatch_raises(
         tmp_path / "other.tif",
         np.zeros((IMG_H, IMG_W, 3), dtype=np.uint16),
     )
-    left = Frame(tmp_rgb_tiff).downscaled_copy(2)
-    left_dest = tmp_path / "left_proxy.tif"
-    left.save_as(left_dest)
+    light = Frame(tmp_rgb_tiff).downscaled_copy(2)
+    light_dest = tmp_path / "light_proxy.tif"
+    light.save_as(light_dest)
 
     right = Frame(other_path)
     right.timestamp = 1.0
-    right_proxy = right.downscaled_copy(4)
-    right_dest = tmp_path / "right_proxy.tif"
-    right_proxy.save_as(right_dest)
+    dark_proxy = right.downscaled_copy(4)
+    dark_dest = tmp_path / "dark_proxy.tif"
+    dark_proxy.save_as(dark_dest)
 
     with pytest.raises(ValueError, match="Downscale factor mismatch"):
-        left.subtract(right_proxy)
+        Frame(light_dest).subtract_dark(Frame(dark_dest))
 
 
-def test_subtract_bit_depth_mismatch_raises(tmp_path: Path) -> None:
+def test_subtract_dark_bit_depth_mismatch_raises(tmp_path: Path) -> None:
     """Frames with different bit depths cannot be subtracted."""
     from tests.utils import write_gray_tiff
 
-    left_path = write_gray_tiff(
-        tmp_path / "left.tif",
+    light_path = write_gray_tiff(
+        tmp_path / "light.tif",
         np.zeros((10, 10), dtype=np.uint16),
     )
-    right_path = write_gray_tiff(
-        tmp_path / "right.tif",
+    dark_path = write_gray_tiff(
+        tmp_path / "dark.tif",
         np.zeros((10, 10), dtype=np.uint8),
     )
     with pytest.raises(ValueError, match="Bit depth mismatch"):
-        Frame(left_path).subtract(Frame(right_path))
+        Frame(light_path).subtract_dark(Frame(dark_path))
 
 
-def test_subtract_inplace_conserves_other_cache(tmp_path: Path) -> None:
-    """inplace=True conserves the cache state of the other operand."""
+def test_subtract_dark_conserves_master_dark_cache(tmp_path: Path) -> None:
+    """subtract_dark() conserves the cache state of the master dark operand."""
     from tests.utils import write_gray_tiff
 
-    left_path = write_gray_tiff(
-        tmp_path / "left.tif", np.full((24, 32), 100, dtype=np.uint16)
+    light_path = write_gray_tiff(
+        tmp_path / "light.tif", np.full((24, 32), 100, dtype=np.uint16)
     )
-    right_path = write_gray_tiff(
-        tmp_path / "right.tif", np.full((24, 32), 10, dtype=np.uint16)
+    dark_path = write_gray_tiff(
+        tmp_path / "dark.tif", np.full((24, 32), 10, dtype=np.uint16)
     )
-    left = Frame(left_path)
-    right = Frame(right_path)
-    assert right._array_cache is None
-    left.subtract(right, inplace=True)
-    assert right._array_cache is None
+    light = Frame(light_path)
+    dark = Frame(dark_path)
+    assert dark._array_cache is None
+    light.subtract_dark(dark)
+    assert dark._array_cache is None
 
-    # Also verify: if other was already loaded, it stays loaded.
-    left2 = Frame(left_path)
-    _ = right.array
-    assert right._array_cache is not None
-    left2.subtract(right, inplace=True)
-    assert right._array_cache is not None
+    # If master dark was already loaded, it stays loaded.
+    light2 = Frame(light_path)
+    _ = dark.array
+    assert dark._array_cache is not None
+    light2.subtract_dark(dark)
+    assert dark._array_cache is not None
+
+
+# --- interpolate_bad_pixels ---
+
+
+def test_interpolate_bad_pixels_hot_pixel_replaced(tmp_path: Path) -> None:
+    """Hot dark pixels are replaced by 8-neighbor median in the light frame."""
+    from tests.utils import write_gray_tiff
+
+    light_arr = np.full((3, 3), 1000, dtype=np.uint16)
+    dark_arr = np.full((3, 3), 100, dtype=np.uint16)
+    dark_arr[1, 1] = 20000  # hot pixel, well above MAD threshold
+
+    light = Frame(write_gray_tiff(tmp_path / "light.tif", light_arr))
+    dark = Frame(write_gray_tiff(tmp_path / "dark.tif", dark_arr))
+
+    light.interpolate_bad_pixels(dark)
+
+    assert light.array[0, 0] == 1000  # untouched
+    assert light.array[1, 1] == 1000  # hot pixel replaced with neighbor median
+
+
+def test_interpolate_bad_pixels_detaches_from_path(tmp_path: Path) -> None:
+    """interpolate_bad_pixels() detaches the frame from its backing path."""
+    from tests.utils import write_gray_tiff
+
+    light_path = write_gray_tiff(
+        tmp_path / "light.tif", np.full((24, 32), 500, dtype=np.uint16)
+    )
+    dark_path = write_gray_tiff(
+        tmp_path / "dark.tif", np.full((24, 32), 10, dtype=np.uint16)
+    )
+    light = Frame(light_path)
+    light.interpolate_bad_pixels(Frame(dark_path))
+    assert light._path is None
+
+
+def test_interpolate_bad_pixels_returns_none(tmp_path: Path) -> None:
+    """interpolate_bad_pixels() returns None."""
+    from tests.utils import write_gray_tiff
+
+    light_path = write_gray_tiff(
+        tmp_path / "light.tif", np.full((24, 32), 500, dtype=np.uint16)
+    )
+    dark_path = write_gray_tiff(
+        tmp_path / "dark.tif", np.full((24, 32), 10, dtype=np.uint16)
+    )
+    result = Frame(light_path).interpolate_bad_pixels(Frame(dark_path))
+    assert result is None
+
+
+def test_interpolate_bad_pixels_shape_mismatch_raises(tmp_path: Path) -> None:
+    """Frames with different shapes cannot be used together."""
+    from tests.utils import write_gray_tiff
+
+    light_path = write_gray_tiff(
+        tmp_path / "light.tif", np.zeros((10, 10), dtype=np.uint16)
+    )
+    dark_path = write_gray_tiff(
+        tmp_path / "dark.tif", np.zeros((10, 11), dtype=np.uint16)
+    )
+    with pytest.raises(ValueError, match="Shape mismatch"):
+        Frame(light_path).interpolate_bad_pixels(Frame(dark_path))
+
+
+def test_interpolate_bad_pixels_conserves_master_dark_cache(tmp_path: Path) -> None:
+    """interpolate_bad_pixels() conserves the cache state of the master dark."""
+    from tests.utils import write_gray_tiff
+
+    light_path = write_gray_tiff(
+        tmp_path / "light.tif", np.full((24, 32), 500, dtype=np.uint16)
+    )
+    dark_path = write_gray_tiff(
+        tmp_path / "dark.tif", np.full((24, 32), 10, dtype=np.uint16)
+    )
+    light = Frame(light_path)
+    dark = Frame(dark_path)
+    assert dark._array_cache is None
+    light.interpolate_bad_pixels(dark)
+    assert dark._array_cache is None
+
+    light2 = Frame(light_path)
+    _ = dark.array
+    assert dark._array_cache is not None
+    light2.interpolate_bad_pixels(dark)
+    assert dark._array_cache is not None
 
 
 # --- downscaled_copy ---
@@ -879,39 +902,35 @@ def test_downscaled_copy_conserves_loaded_cache(tmp_rgb_tiff: Path) -> None:
     assert frame._array_cache is not None
 
 
-def test_subtract_conserves_unloaded_cache(tmp_path: Path) -> None:
-    """subtract() does not leave arrays cached on either operand."""
+def test_subtract_dark_conserves_unloaded_master_dark_cache(tmp_path: Path) -> None:
+    """subtract_dark() does not leave the master dark array cached if unloaded."""
     from tests.utils import write_gray_tiff
 
-    left = Frame(
+    light = Frame(
         write_gray_tiff(tmp_path / "l.tif", np.full((24, 32), 100, dtype=np.uint16))
     )
-    right = Frame(
+    dark = Frame(
         write_gray_tiff(tmp_path / "r.tif", np.full((24, 32), 10, dtype=np.uint16))
     )
-    assert left._array_cache is None
-    assert right._array_cache is None
-    left.subtract(right)
-    assert left._array_cache is None
-    assert right._array_cache is None
+    assert dark._array_cache is None
+    light.subtract_dark(dark)
+    assert dark._array_cache is None
 
 
-def test_subtract_conserves_loaded_cache(tmp_path: Path) -> None:
-    """subtract() keeps arrays cached on operands that were already loaded."""
+def test_subtract_dark_conserves_loaded_master_dark_cache(tmp_path: Path) -> None:
+    """subtract_dark() keeps the master dark cached if it was already loaded."""
     from tests.utils import write_gray_tiff
 
-    left = Frame(
+    light = Frame(
         write_gray_tiff(tmp_path / "l.tif", np.full((24, 32), 100, dtype=np.uint16))
     )
-    right = Frame(
+    dark = Frame(
         write_gray_tiff(tmp_path / "r.tif", np.full((24, 32), 10, dtype=np.uint16))
     )
-    _ = left.array
-    assert left._array_cache is not None
-    assert right._array_cache is None
-    left.subtract(right)
-    assert left._array_cache is not None
-    assert right._array_cache is None
+    _ = dark.array
+    assert dark._array_cache is not None
+    light.subtract_dark(dark)
+    assert dark._array_cache is not None
 
 
 def test_plot_conserves_unloaded_cache(tmp_rgb_tiff: Path) -> None:

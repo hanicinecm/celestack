@@ -4,10 +4,11 @@ import numpy as np
 import pytest
 
 from celestack.frame._image_ops import (
+    build_dark_bad_pixel_mask,
     convert_bit_depth,
     downscale_by_block_average,
     scaled_preview_uint8,
-    subtract_arrays,
+    subtract_master_dark,
     to_grayscale,
 )
 
@@ -82,15 +83,43 @@ def test_convert_bit_depth_bool_to_uint8() -> None:
     assert result[0, 1] == 0
 
 
-# --- subtract_arrays ---
+# --- _build_dark_bad_pixel_mask ---
 
 
-def test_subtract_arrays_unsigned_clamps_underflow() -> None:
+def test_build_dark_bad_pixel_mask_flags_hot_pixel() -> None:
+    """A pixel significantly brighter than the dark background is flagged."""
+    dark = np.full((5, 5), 100, dtype=np.uint16)
+    dark[2, 2] = 20000  # clearly a hot pixel
+    mask = build_dark_bad_pixel_mask(dark)
+    assert mask[2, 2]
+    assert not mask[0, 0]
+
+
+def test_build_dark_bad_pixel_mask_rgb_uses_max_channel() -> None:
+    """Hot-pixel detection on RGB uses the per-pixel max across channels."""
+    dark = np.full((5, 5, 3), 100, dtype=np.uint16)
+    dark[1, 3, 1] = 20000  # one channel spiked
+    mask = build_dark_bad_pixel_mask(dark)
+    assert mask[1, 3]
+    assert not mask[0, 0]
+
+
+def test_build_dark_bad_pixel_mask_no_hot_pixels_returns_false() -> None:
+    """Uniform dark with no hot pixels produces an all-False mask."""
+    dark = np.full((4, 4), 50, dtype=np.uint16)
+    mask = build_dark_bad_pixel_mask(dark)
+    assert not mask.any()
+
+
+# --- subtract_master_dark ---
+
+
+def test_subtract_master_dark_clamps_underflow() -> None:
     """Unsigned subtraction saturates at zero instead of wrapping."""
-    left = np.array([[20, 5], [100, 0]], dtype=np.uint16)
-    right = np.array([[3, 9], [20, 1]], dtype=np.uint16)
+    light = np.array([[20, 5], [100, 0]], dtype=np.uint16)
+    dark = np.array([[3, 9], [20, 1]], dtype=np.uint16)
 
-    result = subtract_arrays(left, right)
+    result = subtract_master_dark(light, dark)
 
     assert result.dtype == np.uint16
     np.testing.assert_array_equal(
@@ -99,88 +128,25 @@ def test_subtract_arrays_unsigned_clamps_underflow() -> None:
     )
 
 
-def test_subtract_arrays_bool_raises() -> None:
-    """Boolean arrays are not supported for subtraction."""
+def test_subtract_master_dark_bool_raises() -> None:
+    """Boolean arrays are not supported."""
     left = np.array([[True, False]])
     right = np.array([[False, True]])
 
     with pytest.raises(ValueError, match="Unsupported dtype for subtraction"):
-        subtract_arrays(left, right)
+        subtract_master_dark(left, right)
 
 
-def test_subtract_arrays_correct_saturated_interpolates_center() -> None:
-    """Blown dark pixels are replaced by 8-neighbor mean, not clamped to zero."""
-    max_val = np.iinfo(np.uint16).max
-    # 3x3 light: uniform value of 1000
-    light = np.full((3, 3), 1000, dtype=np.uint16)
-    # 3x3 dark: center pixel is blown, rest is 100
-    dark = np.full((3, 3), 100, dtype=np.uint16)
-    dark[1, 1] = max_val
-
-    result = subtract_arrays(light, dark, correct_saturated=True)
-
-    # Non-saturated pixels subtract normally
-    assert result[0, 0] == 900
-    # Center pixel: result of normal subtraction of neighbors (900) averaged
-    assert result[1, 1] == 900
-
-
-def test_subtract_arrays_correct_saturated_default_off() -> None:
-    """Without correct_saturated, blown dark pixels produce zero."""
-    max_val = np.iinfo(np.uint16).max
+def test_subtract_master_dark_hot_pixel_not_interpolated() -> None:
+    """subtract_master_dark does not interpolate hot pixels; they clamp to zero."""
     light = np.full((3, 3), 1000, dtype=np.uint16)
     dark = np.full((3, 3), 100, dtype=np.uint16)
-    dark[1, 1] = max_val
+    dark[1, 1] = 20000  # hot pixel exceeds light value
 
-    result = subtract_arrays(light, dark)
+    result = subtract_master_dark(light, dark)
 
-    assert result[1, 1] == 0
-
-
-def test_subtract_arrays_correct_saturated_rgb() -> None:
-    """Saturated-pixel correction works on 3-channel arrays."""
-    max_val = np.iinfo(np.uint16).max
-    light = np.full((3, 3, 3), 1000, dtype=np.uint16)
-    dark = np.full((3, 3, 3), 100, dtype=np.uint16)
-    dark[1, 1, :] = max_val
-
-    result = subtract_arrays(light, dark, correct_saturated=True)
-
-    # Neighbors subtract normally
-    np.testing.assert_array_equal(result[0, 0], [900, 900, 900])
-    # Center interpolated from neighbors (all 900)
-    np.testing.assert_array_equal(result[1, 1], [900, 900, 900])
-
-
-def test_subtract_arrays_correct_saturated_single_channel_triggers() -> None:
-    """A pixel is corrected when any one RGB channel is saturated, not just all."""
-    max_val = np.iinfo(np.uint16).max
-    light = np.full((3, 3, 3), 1000, dtype=np.uint16)
-    dark = np.full((3, 3, 3), 100, dtype=np.uint16)
-    dark[1, 1, 0] = max_val  # only the red channel is blown
-
-    result = subtract_arrays(light, dark, correct_saturated=True)
-
-    # The whole pixel is interpolated from neighbors (all 900)
-    np.testing.assert_array_equal(result[1, 1], [900, 900, 900])
-
-
-def test_subtract_arrays_correct_saturated_corner_no_wraparound() -> None:
-    """Corner saturated pixels use only in-bounds neighbors, no edge wraparound."""
-    max_val = np.iinfo(np.uint16).max
-    # 4x4 light: uniform 1000; dark: uniform 100 except top-left corner is blown
-    light = np.full((4, 4), 1000, dtype=np.uint16)
-    dark = np.full((4, 4), 100, dtype=np.uint16)
-    dark[0, 0] = max_val
-
-    result = subtract_arrays(light, dark, correct_saturated=True)
-
-    # Corner pixel's only valid neighbors are (0,1), (1,0), (1,1) — all give 900
-    assert result[0, 0] == 900
-    # Pixels on the opposite edge must be unaffected (no wraparound)
-    assert result[3, 3] == 900
-    assert result[0, 3] == 900
-    assert result[3, 0] == 900
+    assert result[0, 0] == 900  # normal pixels subtract correctly
+    assert result[1, 1] == 0  # hot pixel clamps to zero, no interpolation
 
 
 # --- scaled_preview_uint8 ---

@@ -4,6 +4,11 @@ from __future__ import annotations
 
 import numpy as np
 
+# Pixels in the master dark whose brightness exceeds
+# median + _BAD_PIXEL_THRESHOLD × robust_std are treated as hot pixels and
+# replaced via neighbor interpolation after subtraction.
+BAD_PIXEL_THRESHOLD: float = 30.0
+
 
 def scaled_preview_uint8(array: np.ndarray) -> np.ndarray:
     """Scale arbitrary image data into an 8-bit preview array."""
@@ -84,7 +89,7 @@ def to_grayscale(array: np.ndarray) -> np.ndarray:
 
 
 def interpolate_bad_pixels(array: np.ndarray, mask: np.ndarray) -> np.ndarray:
-    """Replace masked pixels with the mean of their valid 8-connected neighbors.
+    """Replace masked pixels with the median of their valid 8-connected neighbors.
 
     Operates only on the small set of masked pixel coordinates rather than
     rolling the full image array, so cost scales with the number of bad pixels,
@@ -95,7 +100,7 @@ def interpolate_bad_pixels(array: np.ndarray, mask: np.ndarray) -> np.ndarray:
         mask: Boolean 2D mask; True where a pixel is bad.
 
     Returns:
-        A copy of *array* with masked pixels replaced by neighbor means.
+        A copy of *array* with masked pixels replaced by neighbor medians.
         Pixels with no valid neighbors are set to zero.
     """
     result = array.copy()
@@ -114,8 +119,8 @@ def interpolate_bad_pixels(array: np.ndarray, mask: np.ndarray) -> np.ndarray:
             if 0 <= y + dy < h and 0 <= x + dx < w and not mask[y + dy, x + dx]
         ]
         if neighbour_vals:
-            mean = np.mean(neighbour_vals, axis=0)
-            result[y, x] = np.clip(np.rint(mean), limits.min, limits.max).astype(
+            median = np.median(neighbour_vals, axis=0)
+            result[y, x] = np.clip(np.rint(median), limits.min, limits.max).astype(
                 array.dtype
             )
         else:
@@ -124,41 +129,53 @@ def interpolate_bad_pixels(array: np.ndarray, mask: np.ndarray) -> np.ndarray:
     return result
 
 
-def subtract_arrays(
-    left: np.ndarray,
-    right: np.ndarray,
-    *,
-    correct_saturated: bool = False,
-) -> np.ndarray:
-    """Subtract arrays while preserving the left dtype.
+def build_dark_bad_pixel_mask(dark_array: np.ndarray) -> np.ndarray:
+    """Identify hot pixels in a dark frame using a MAD-based outlier threshold.
+
+    Computes per-pixel brightness (max across channels for RGB arrays), then
+    estimates the noise robustly via the median absolute deviation (MAD) and
+    flags pixels whose brightness exceeds
+    ``median + _BAD_PIXEL_THRESHOLD × robust_std``.  A minimum noise floor of
+    1 ADU is applied so the threshold does not collapse to the median when the
+    dark frame has no variation among its good pixels.
 
     Args:
-        left: Minuend array.
-        right: Subtrahend array.
-        correct_saturated: If True and the arrays are unsigned integers, pixels
-            where *right* is at the dtype maximum (for RGB: where any channel
-            is at maximum) are replaced with the mean of their valid
-            8-connected neighbors in the result. Useful when *right* is a
-            master dark with blown hot pixels that would otherwise produce
-            spurious black spots.
+        dark_array: Dark frame array (2D or 3D).
 
     Returns:
-        Result array with the same dtype as *left*.
+        Boolean 2D mask; True where a pixel is a hot-pixel candidate.
+    """
+    brightness = dark_array.max(axis=2) if dark_array.ndim == 3 else dark_array
+    b = brightness.astype(np.float64)
+    median = np.median(b)
+    mad = np.median(np.abs(b - median))
+    robust_std = max(1.4826 * mad, 1.0)
+    return b > median + BAD_PIXEL_THRESHOLD * robust_std
+
+
+def subtract_master_dark(
+    light_array: np.ndarray,
+    dark_array: np.ndarray,
+) -> np.ndarray:
+    """Subtract a master dark from a light frame with saturating arithmetic.
+
+    Unsigned integers clip at zero rather than wrapping.
+
+    Args:
+        light_array: Light frame array.
+        dark_array: Master dark array; must match the dtype and shape of
+            *light_array*.
+
+    Returns:
+        Result array with the same dtype as *light_array*.
 
     Raises:
         ValueError: If the dtype is unsupported.
     """
-    if np.issubdtype(left.dtype, np.unsignedinteger):
-        result = left.astype(np.int32) - right.astype(np.int32)
-        limits = np.iinfo(left.dtype)
-        clipped = np.clip(result, limits.min, limits.max).astype(left.dtype)
-        if correct_saturated:
-            mask = right == limits.max
-            if mask.ndim == 3:
-                mask = mask.any(axis=2)
-            if mask.any():
-                clipped = interpolate_bad_pixels(clipped, mask)
-        return clipped
+    if np.issubdtype(light_array.dtype, np.unsignedinteger):
+        diff = light_array.astype(np.int32) - dark_array.astype(np.int32)
+        limits = np.iinfo(light_array.dtype)
+        return np.clip(diff, limits.min, limits.max).astype(light_array.dtype)
 
-    msg = f"Unsupported dtype for subtraction: {left.dtype}"
+    msg = f"Unsupported dtype for subtraction: {light_array.dtype}"
     raise ValueError(msg)

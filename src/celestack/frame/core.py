@@ -6,7 +6,6 @@ import shutil
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Literal, overload
 
 import numpy as np
 import plotly.graph_objects as go
@@ -16,9 +15,11 @@ from celestack.exceptions import DownscaleError
 from celestack.frame._backends import Backend, EmptyBackend, get_backends, is_tiff_path
 from celestack.frame._constants import CELESTACK_KEY
 from celestack.frame._image_ops import (
+    build_dark_bad_pixel_mask,
     convert_bit_depth,
     downscale_by_block_average,
-    subtract_arrays,
+    interpolate_bad_pixels,
+    subtract_master_dark,
     to_grayscale,
 )
 from celestack.frame._metadata import (
@@ -255,73 +256,47 @@ class Frame:
 
         self._attach(target)
 
-    @overload
-    def subtract(
-        self,
-        other: Frame,
-        *,
-        inplace: Literal[False] = ...,
-        correct_saturated: bool = ...,
-    ) -> Frame: ...
+    def subtract_dark(self, master_dark: Frame) -> None:
+        """Subtract a master dark from this frame in place.
 
-    @overload
-    def subtract(
-        self,
-        other: Frame,
-        *,
-        inplace: Literal[True],
-        correct_saturated: bool = ...,
-    ) -> None: ...
-
-    def subtract(
-        self,
-        other: Frame,
-        *,
-        inplace: bool = False,
-        correct_saturated: bool = True,
-    ) -> Frame | None:
-        """Subtract *other* from this frame pixel-wise, saturating at zero.
-
-        The array cache is conserved on both operands when not in-place: if
-        pixel data was not loaded before the call, it is unloaded afterwards.
-        In-place mode conserves the cache on *other* only; self's cache is
-        replaced with the result and self is detached from its backing path.
+        Performs saturating subtraction (unsigned integers clip at zero).
+        Self is detached from its backing path after the operation.
 
         Args:
-            other: Frame to subtract. Must match shape, dtype, bit depth, and
-                downscale factor.
-            inplace: If True, update self in place and return None. If False
-                (default), return a new detached Frame.
-            correct_saturated: If True, pixels where *other* is at the maximum
-                dtype value (blown hot pixels in the dark frame) are replaced in
-                the result with the mean of their valid 8-connected neighbors
-                instead of clipping to zero. Useful when subtracting a master
-                dark that contains hot pixels also saturated on the light frame.
-
-        Returns:
-            A new detached Frame when *inplace* is False, otherwise None.
+            master_dark: Master dark frame. Must match shape, dtype, bit
+                depth, and downscale factor.
 
         Raises:
             ValueError: If the frames are incompatible.
         """
-        self._validate_similarity(other)
+        self._validate_similarity(master_dark)
+        with master_dark._conserve_cache():
+            result_array = subtract_master_dark(self.array, master_dark.array)
+        self._array_cache = result_array
+        self._detach()
 
-        if inplace:
-            with other._conserve_cache():
-                result_array = subtract_arrays(
-                    self.array, other.array, correct_saturated=correct_saturated
-                )
-            self._array_cache = result_array
-            self._detach()
-            return None
+    def interpolate_bad_pixels(self, master_dark: Frame) -> None:
+        """Replace hot pixels in this frame using the master dark as a bad pixel map.
 
-        with self._conserve_cache(), other._conserve_cache():
-            result = self._detached_copy()
-            result._array_cache = subtract_arrays(
-                self.array, other.array, correct_saturated=correct_saturated
-            )
-            result._shape = tuple(int(v) for v in result._array_cache.shape)
-        return result
+        Identifies hot pixels in *master_dark* via a MAD-based threshold and
+        replaces the corresponding positions in this frame with the median of
+        their valid 8-connected neighbors. Self is detached from its backing
+        path after the operation.
+
+        Args:
+            master_dark: Master dark frame used solely for hot-pixel
+                detection. Must match shape, dtype, bit depth, and downscale
+                factor.
+
+        Raises:
+            ValueError: If the frames are incompatible.
+        """
+        self._validate_similarity(master_dark)
+        with master_dark._conserve_cache():
+            mask = build_dark_bad_pixel_mask(master_dark.array)
+            result_array = interpolate_bad_pixels(self.array, mask)
+        self._array_cache = result_array
+        self._detach()
 
     def _validate_similarity(self, other: Frame) -> None:
         """Validate that two frames can be subtracted safely."""
