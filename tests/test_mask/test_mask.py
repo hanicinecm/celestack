@@ -76,29 +76,30 @@ def test_array_reloads_after_unload(gray_mask_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# save — in-memory mask (no backing path)
+# save_as — in-memory mask (no backing path)
 # ---------------------------------------------------------------------------
 
 
-def test_save_in_memory_mask(tmp_path: Path) -> None:
-    """save() works on an in-memory mask produced by _from_array."""
+def test_save_as_in_memory_mask(tmp_path: Path) -> None:
+    """save_as() works on an in-memory mask produced by _from_array."""
     array = np.zeros((10, 20), dtype=np.bool_)
     array[2:8, 5:15] = True
     mask = Mask._from_array(array)
-    saved = mask.save(tmp_path / "out.tif")
-    np.testing.assert_array_equal(saved.array, array)
+    out = tmp_path / "out.tif"
+    mask.save_as(out)
+    assert mask.path == out
+    loaded = Mask(out)
+    np.testing.assert_array_equal(loaded.array, array)
 
 
 # ---------------------------------------------------------------------------
-# save_downscaled — factor=1 edge case
+# downscaled_copy — factor=1 edge case
 # ---------------------------------------------------------------------------
 
 
-def test_save_downscaled_factor_1_preserves_content(
-    gray_mask: Mask, tmp_path: Path
-) -> None:
-    """save_downscaled with factor=1 produces the same boolean content."""
-    proxy = gray_mask.save_downscaled(tmp_path / "proxy.tif", 1)
+def test_downscaled_copy_factor_1_preserves_content(gray_mask: Mask) -> None:
+    """downscaled_copy with factor=1 produces the same boolean content."""
+    proxy = gray_mask.downscaled_copy(1)
     assert proxy.downscale_factor == 1
     np.testing.assert_array_equal(proxy.array, gray_mask.array)
 
@@ -142,8 +143,8 @@ def test_repr_with_path(gray_mask_path: Path) -> None:
 
 
 def test_repr_without_path() -> None:
-    """repr renders None for in-memory masks."""
+    """repr renders '<detached>' for in-memory masks."""
     mask = Mask._from_array(np.zeros((4, 4), dtype=np.bool_))
     r = repr(mask)
-    assert "None" in r
+    assert "<detached>" in r
     assert "downscale_factor=1" in r

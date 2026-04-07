@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 import tifffile
 
-from celestack.exceptions import MaskError
+from celestack.exceptions import DownscaleError, MaskError
 from celestack.frame.core import Frame
 from celestack.mask._mask import Mask
 from celestack.mask.core import MaskBuilder
@@ -115,11 +115,12 @@ def test_mask_unload_clears_cache(gray_mask: Mask) -> None:
 # ===========================================================================
 
 
-def test_mask_from_array_has_no_path() -> None:
-    """_from_array produces an in-memory mask with path == None."""
+def test_mask_from_array_is_detached() -> None:
+    """_from_array produces an in-memory mask; path raises AttributeError."""
     array = np.zeros((10, 20), dtype=np.bool_)
     mask = Mask._from_array(array)
-    assert mask.path is None
+    with pytest.raises(AttributeError, match="not backed by a file"):
+        _ = mask.path
 
 
 def test_mask_from_array_stores_bool() -> None:
@@ -145,87 +146,145 @@ def test_mask_from_array_shape() -> None:
 
 
 # ===========================================================================
-# Mask — save
+# Mask — save_as
 # ===========================================================================
 
 
-def test_mask_save_returns_mask(gray_mask: Mask, tmp_path: Path) -> None:
-    """save() returns a Mask instance."""
-    result = gray_mask.save(tmp_path / "out.tif")
-    assert isinstance(result, Mask)
+def test_mask_save_as_returns_none(gray_mask: Mask, tmp_path: Path) -> None:
+    """save_as() returns None."""
+    result = gray_mask.save_as(tmp_path / "out.tif")
+    assert result is None
 
 
-def test_mask_save_writes_uint8_grayscale(gray_mask: Mask, tmp_path: Path) -> None:
+def test_mask_save_as_binds_path(gray_mask: Mask, tmp_path: Path) -> None:
+    """save_as() binds the instance to the new path."""
+    out = tmp_path / "out.tif"
+    gray_mask.save_as(out)
+    assert gray_mask.path == out
+
+
+def test_mask_save_as_writes_uint8_grayscale(gray_mask: Mask, tmp_path: Path) -> None:
     """Saved file is a 2D uint8 array."""
     out = tmp_path / "out.tif"
-    gray_mask.save(out)
+    gray_mask.save_as(out)
     data = tifffile.imread(out)
     assert data.ndim == 2
     assert data.dtype == np.uint8
 
 
-def test_mask_save_true_pixels_are_255(gray_mask: Mask, tmp_path: Path) -> None:
+def test_mask_save_as_true_pixels_are_255(gray_mask: Mask, tmp_path: Path) -> None:
     """True pixels are saved as 255, False pixels as 0."""
     out = tmp_path / "out.tif"
-    gray_mask.save(out)
+    gray_mask.save_as(out)
     data = tifffile.imread(out)
     # row 5, col 8 is in the nonzero region → True → 255
     assert data[5, 8] == 255
     assert data[0, 0] == 0
 
 
-def test_mask_save_round_trips(gray_mask: Mask, tmp_path: Path) -> None:
+def test_mask_save_as_round_trips(gray_mask: Mask, tmp_path: Path) -> None:
     """Loading a saved mask produces the same boolean array."""
+    original = gray_mask.array.copy()
     out = tmp_path / "out.tif"
-    saved = gray_mask.save(out)
-    np.testing.assert_array_equal(saved.array, gray_mask.array)
+    gray_mask.save_as(out)
+    loaded = Mask(out)
+    np.testing.assert_array_equal(loaded.array, original)
 
 
-def test_mask_save_wrong_extension_raises(gray_mask: Mask, tmp_path: Path) -> None:
-    """save() raises ValueError for non-TIFF paths."""
+def test_mask_save_as_wrong_extension_raises(gray_mask: Mask, tmp_path: Path) -> None:
+    """save_as() raises ValueError for non-TIFF paths."""
     with pytest.raises(ValueError, match="TIFF file"):
-        gray_mask.save(tmp_path / "out.png")
+        gray_mask.save_as(tmp_path / "out.png")
 
 
-def test_mask_save_creates_parent_dirs(gray_mask: Mask, tmp_path: Path) -> None:
-    """save() creates intermediate directories as needed."""
+def test_mask_save_as_creates_parent_dirs(gray_mask: Mask, tmp_path: Path) -> None:
+    """save_as() creates intermediate directories as needed."""
     out = tmp_path / "a" / "b" / "out.tif"
-    gray_mask.save(out)
+    gray_mask.save_as(out)
     assert out.exists()
 
 
-def test_mask_save_conserves_cache(gray_mask_path: Path, tmp_path: Path) -> None:
-    """save() does not leave the array loaded if it wasn't before."""
+def test_mask_save_as_conserves_cache(gray_mask_path: Path, tmp_path: Path) -> None:
+    """save_as() does not leave the array loaded if it wasn't before."""
     mask = Mask(gray_mask_path)
     assert mask._array_cache is None
-    mask.save(tmp_path / "out.tif")
+    mask.save_as(tmp_path / "out.tif")
     assert mask._array_cache is None
 
 
+def test_mask_save_as_overwrite_false_raises(
+    gray_mask: Mask, tmp_path: Path
+) -> None:
+    """save_as() raises FileExistsError when destination exists and overwrite is False."""
+    out = tmp_path / "out.tif"
+    gray_mask.save_as(out)
+    with pytest.raises(FileExistsError):
+        gray_mask.save_as(out)
+
+
+def test_mask_save_as_overwrite_true_succeeds(
+    gray_mask: Mask, tmp_path: Path
+) -> None:
+    """save_as() succeeds when overwrite=True even if the file exists."""
+    out = tmp_path / "out.tif"
+    gray_mask.save_as(out)
+    gray_mask.save_as(out, overwrite=True)
+    assert out.exists()
+
+
+def test_mask_save_as_in_memory_mask(tmp_path: Path) -> None:
+    """save_as() works on an in-memory mask produced by _from_array."""
+    array = np.zeros((10, 20), dtype=np.bool_)
+    array[2:8, 5:15] = True
+    mask = Mask._from_array(array)
+    out = tmp_path / "out.tif"
+    mask.save_as(out)
+    assert mask.path == out
+    loaded = Mask(out)
+    np.testing.assert_array_equal(loaded.array, array)
+
+
 # ===========================================================================
-# Mask — save_downscaled
+# Mask — downscaled_copy
 # ===========================================================================
 
 
-def test_mask_save_downscaled_returns_mask(gray_mask: Mask, tmp_path: Path) -> None:
-    """save_downscaled() returns a Mask instance."""
-    result = gray_mask.save_downscaled(tmp_path / "proxy.tif", 2)
+def test_mask_downscaled_copy_returns_mask(gray_mask: Mask) -> None:
+    """downscaled_copy() returns a Mask instance."""
+    result = gray_mask.downscaled_copy(2)
     assert isinstance(result, Mask)
 
 
-def test_mask_save_downscaled_factor_embedded(gray_mask: Mask, tmp_path: Path) -> None:
+def test_mask_downscaled_copy_is_detached(gray_mask: Mask) -> None:
+    """downscaled_copy() returns an in-memory mask with no backing path."""
+    proxy = gray_mask.downscaled_copy(2)
+    with pytest.raises(AttributeError, match="not backed by a file"):
+        _ = proxy.path
+
+
+def test_mask_downscaled_copy_factor(gray_mask: Mask) -> None:
     """The returned proxy mask has the correct downscale_factor."""
-    proxy = gray_mask.save_downscaled(tmp_path / "proxy.tif", 4)
+    proxy = gray_mask.downscaled_copy(4)
     assert proxy.downscale_factor == 4
 
 
-def test_mask_save_downscaled_reduces_shape(gray_mask: Mask, tmp_path: Path) -> None:
+def test_mask_downscaled_copy_reduces_shape(gray_mask: Mask) -> None:
     """Proxy shape is approximately (H/factor, W/factor)."""
-    proxy = gray_mask.save_downscaled(tmp_path / "proxy.tif", 2)
+    proxy = gray_mask.downscaled_copy(2)
     assert proxy.shape == (12, 16)
 
 
-def test_mask_save_downscaled_majority_voting(tmp_path: Path) -> None:
+def test_mask_downscaled_copy_factor_persisted_via_save_as(
+    gray_mask: Mask, tmp_path: Path
+) -> None:
+    """Calling save_as on a downscaled_copy embeds the downscale_factor in metadata."""
+    proxy = gray_mask.downscaled_copy(4)
+    proxy.save_as(tmp_path / "proxy.tif")
+    loaded = Mask(tmp_path / "proxy.tif")
+    assert loaded.downscale_factor == 4
+
+
+def test_mask_downscaled_copy_majority_voting(tmp_path: Path) -> None:
     """Blocks with >50% foreground become True; <=50% become False."""
     # 4x4 boolean mask; downscale by 2 → 2x2 output
     # Top-left 2x2: [T,T,T,F] → 75% → True
@@ -242,8 +301,7 @@ def test_mask_save_downscaled_majority_voting(tmp_path: Path) -> None:
         dtype=np.bool_,
     )
     mask = Mask._from_array(array)
-    out = tmp_path / "proxy.tif"
-    proxy = mask.save_downscaled(out, 2)
+    proxy = mask.downscaled_copy(2)
     result = proxy.array
     assert result[0, 0]
     assert not result[0, 1]
@@ -251,9 +309,7 @@ def test_mask_save_downscaled_majority_voting(tmp_path: Path) -> None:
     assert result[1, 1]
 
 
-def test_mask_save_downscaled_exactly_50_percent_is_background(
-    tmp_path: Path,
-) -> None:
+def test_mask_downscaled_copy_exactly_50_percent_is_background() -> None:
     """Blocks with exactly 50% foreground become False (threshold is strictly >0.5)."""
     # 2x4 mask; downscale by 2 → 1x2 output
     # Left 2x2: [T,F,T,F] → 50% → False
@@ -266,42 +322,30 @@ def test_mask_save_downscaled_exactly_50_percent_is_background(
         dtype=np.bool_,
     )
     mask = Mask._from_array(array)
-    proxy = mask.save_downscaled(tmp_path / "proxy.tif", 2)
+    proxy = mask.downscaled_copy(2)
     result = proxy.array
     assert not result[0, 0]
     assert result[0, 1]
 
 
-def test_mask_save_downscaled_wrong_extension_raises(
-    gray_mask: Mask, tmp_path: Path
-) -> None:
-    """save_downscaled() raises ValueError for non-TIFF paths."""
-    with pytest.raises(ValueError, match="TIFF file"):
-        gray_mask.save_downscaled(tmp_path / "proxy.png", 2)
+def test_mask_downscaled_copy_proxy_raises(gray_mask: Mask, tmp_path: Path) -> None:
+    """downscaled_copy() raises DownscaleError when called on a proxy mask."""
+    proxy = gray_mask.downscaled_copy(2)
+    with pytest.raises(DownscaleError, match="proxy mask"):
+        proxy.downscaled_copy(2)
 
 
-def test_mask_save_downscaled_proxy_raises(gray_mask: Mask, tmp_path: Path) -> None:
-    """save_downscaled() raises ValueError when called on a proxy mask."""
-    proxy = gray_mask.save_downscaled(tmp_path / "proxy.tif", 2)
-    with pytest.raises(ValueError, match="proxy mask"):
-        proxy.save_downscaled(tmp_path / "proxy2.tif", 2)
-
-
-def test_mask_save_downscaled_invalid_factor_raises(
-    gray_mask: Mask, tmp_path: Path
-) -> None:
-    """save_downscaled() raises ValueError for factor < 1."""
+def test_mask_downscaled_copy_invalid_factor_raises(gray_mask: Mask) -> None:
+    """downscaled_copy() raises ValueError for factor < 1."""
     with pytest.raises(ValueError, match="downscale_factor"):
-        gray_mask.save_downscaled(tmp_path / "proxy.tif", 0)
+        gray_mask.downscaled_copy(0)
 
 
-def test_mask_save_downscaled_conserves_cache(
-    gray_mask_path: Path, tmp_path: Path
-) -> None:
-    """save_downscaled() does not leave the array loaded if it wasn't before."""
+def test_mask_downscaled_copy_conserves_cache(gray_mask_path: Path) -> None:
+    """downscaled_copy() does not leave the array loaded if it wasn't before."""
     mask = Mask(gray_mask_path)
     assert mask._array_cache is None
-    mask.save_downscaled(tmp_path / "proxy.tif", 2)
+    mask.downscaled_copy(2)
     assert mask._array_cache is None
 
 
@@ -606,7 +650,8 @@ def test_build_is_independent_copy(builder: MaskBuilder) -> None:
     np.testing.assert_array_equal(mask.array, original)
 
 
-def test_build_path_is_none(builder: MaskBuilder) -> None:
+def test_build_is_detached(builder: MaskBuilder) -> None:
     """The Mask returned by build() has no backing path."""
     builder.apply_labels({0})
-    assert builder.build().path is None
+    with pytest.raises(AttributeError, match="not backed by a file"):
+        _ = builder.build().path
