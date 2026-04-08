@@ -104,7 +104,7 @@ def plot_clusters(labels: np.ndarray) -> go.Figure:
         )
     )
 
-    for cluster_id, (r, g, b) in enumerate(palette):
+    for cluster_id, (r, g, b) in reversed(list(enumerate(palette))):
         fig.add_trace(
             go.Scatter(
                 x=[None],
