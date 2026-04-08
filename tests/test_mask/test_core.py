@@ -1,16 +1,16 @@
-"""Tests for the Mask class and MaskBuilder class."""
+"""Tests for the Mask class (src/celestack/mask/core.py)."""
 
 from pathlib import Path
 
 import numpy as np
+import plotly.graph_objects as go
 import pytest
 import tifffile
+from PIL import Image
 
-from celestack.exceptions import DownscaleError, MaskError
-from celestack.frame.core import Frame
-from celestack.mask._clustering import ClusterWeights
-from celestack.mask._mask import Mask
-from celestack.mask.core import MaskBuilder
+from celestack.exceptions import DownscaleError
+from celestack.mask.core import Mask
+
 
 # ===========================================================================
 # Mask — construction from path
@@ -73,7 +73,7 @@ def test_mask_array_thresholds_nonzero_grayscale(gray_mask_path: Path) -> None:
 
 
 def test_mask_array_thresholds_rgb(rgb_mask_path: Path) -> None:
-    """RGB mask: top half (value 200) → True, bottom half (0) → False."""
+    """RGB mask: top half (value 200) -> True, bottom half (0) -> False."""
     mask = Mask(rgb_mask_path)
     assert mask.array[0, 0]
     assert not mask.array[23, 0]
@@ -178,7 +178,6 @@ def test_mask_save_as_true_pixels_are_255(gray_mask: Mask, tmp_path: Path) -> No
     out = tmp_path / "out.tif"
     gray_mask.save_as(out)
     data = tifffile.imread(out)
-    # row 5, col 8 is in the nonzero region → True → 255
     assert data[5, 8] == 255
     assert data[0, 0] == 0
 
@@ -283,11 +282,6 @@ def test_mask_downscaled_copy_factor_persisted_via_save_as(
 
 def test_mask_downscaled_copy_majority_voting(tmp_path: Path) -> None:
     """Blocks with >50% foreground become True; <=50% become False."""
-    # 4x4 boolean mask; downscale by 2 → 2x2 output
-    # Top-left 2x2: [T,T,T,F] → 75% → True
-    # Top-right 2x2: [F,F,F,F] → 0% → False
-    # Bottom-left 2x2: [T,F,F,F] → 25% → False
-    # Bottom-right 2x2: [T,T,F,T] → 75% → True
     array = np.array(
         [
             [True, True, False, False],
@@ -308,9 +302,6 @@ def test_mask_downscaled_copy_majority_voting(tmp_path: Path) -> None:
 
 def test_mask_downscaled_copy_exactly_50_percent_is_background() -> None:
     """Blocks with exactly 50% foreground become False (threshold is strictly >0.5)."""
-    # 2x4 mask; downscale by 2 → 1x2 output
-    # Left 2x2: [T,F,T,F] → 50% → False
-    # Right 2x2: [T,T,T,F] → 75% → True
     array = np.array(
         [
             [True, False, True, True],
@@ -346,364 +337,273 @@ def test_mask_downscaled_copy_conserves_cache(gray_mask_path: Path) -> None:
     assert mask._array_cache is None
 
 
-# ===========================================================================
-# MaskBuilder — constructor
-# ===========================================================================
+# ---------------------------------------------------------------------------
+# Construction from PNG and JPG sources
+# ---------------------------------------------------------------------------
 
 
-def test_init_accepts_rgb_frame(rgb_frame: Frame) -> None:
-    """MaskBuilder accepts a valid 3-channel RGB Frame."""
-    mb = MaskBuilder(rgb_frame)
-    assert mb._height == rgb_frame.shape[0]
-    assert mb._width == rgb_frame.shape[1]
+@pytest.mark.parametrize("suffix", [".png", ".jpg", ".jpeg"])
+def test_mask_init_from_pillow_format(tmp_path: Path, suffix: str) -> None:
+    """Mask loads from PNG and JPEG files via the Pillow backend."""
+    array = np.zeros((24, 32), dtype=np.uint8)
+    array[4:20, 8:24] = 255
+    img = Image.fromarray(array, mode="L")
+    path = tmp_path / f"mask{suffix}"
+    img.save(path)
+
+    mask = Mask(path)
+    assert mask.shape == (24, 32)
+    assert mask.array.dtype == np.bool_
+    assert mask.array[10, 16]  # inside the nonzero region
+    assert not mask.array[0, 0]  # outside
 
 
-def test_init_creates_proxy(rgb_frame: Frame) -> None:
-    """MaskBuilder creates a downscaled proxy on construction."""
-    mb = MaskBuilder(rgb_frame, proxy_downscale_factor=2)
-    assert mb._proxy is not None
-    assert mb._proxy_height == rgb_frame.shape[0] // 2
-    assert mb._proxy_width == rgb_frame.shape[1] // 2
+@pytest.mark.parametrize("suffix", [".png", ".jpg", ".jpeg"])
+def test_mask_rgb_pillow_format_booleanizes(tmp_path: Path, suffix: str) -> None:
+    """RGB PNG/JPEG masks are collapsed to a boolean array via grayscale."""
+    array = np.zeros((24, 32, 3), dtype=np.uint8)
+    array[0:12, :, :] = 200  # top half nonzero
+    img = Image.fromarray(array, mode="RGB")
+    path = tmp_path / f"mask{suffix}"
+    img.save(path)
+
+    mask = Mask(path)
+    assert mask.array.dtype == np.bool_
+    assert mask.array[0, 0]
+    assert not mask.array[23, 0]
 
 
-def test_init_proxy_is_rgb(rgb_frame: Frame) -> None:
-    """The proxy retains 3 channels (not grayscale)."""
-    mb = MaskBuilder(rgb_frame, proxy_downscale_factor=2)
-    assert len(mb._proxy.shape) == 3
-    assert mb._proxy.shape[2] == 3
+# ---------------------------------------------------------------------------
+# _from_array — downscale_factor override
+# ---------------------------------------------------------------------------
 
 
-def test_init_rejects_grayscale(gray_mask_path: Path) -> None:
-    """MaskBuilder rejects a grayscale Frame with MaskError."""
-    frame = Frame(gray_mask_path)
-    with pytest.raises(MaskError, match="3-channel RGB"):
-        MaskBuilder(frame)
+def test_from_array_custom_downscale_factor() -> None:
+    """_from_array stores a custom downscale_factor when supplied."""
+    mask = Mask._from_array(np.zeros((8, 8), dtype=np.bool_), downscale_factor=4)
+    assert mask.downscale_factor == 4
 
 
-# ===========================================================================
-# MaskBuilder — compute_clusters
-# ===========================================================================
+def test_from_array_default_downscale_factor_is_1() -> None:
+    """_from_array uses downscale_factor=1 when the argument is omitted."""
+    mask = Mask._from_array(np.zeros((8, 8), dtype=np.bool_))
+    assert mask.downscale_factor == 1
 
 
-def test_compute_clusters_stores_labels(rgb_frame: Frame) -> None:
-    """Labels array has proxy shape after clustering."""
-    mb = MaskBuilder(rgb_frame, proxy_downscale_factor=2)
-    mb.compute_clusters(3)
-    assert mb._labels is not None
-    expected_shape = (rgb_frame.shape[0] // 2, rgb_frame.shape[1] // 2)
-    assert mb._labels.shape == expected_shape
+# ---------------------------------------------------------------------------
+# Lazy reload after unload
+# ---------------------------------------------------------------------------
 
 
-def test_compute_clusters_rejects_k_less_than_2(rgb_frame: Frame) -> None:
-    """compute_clusters raises ValueError for n_clusters < 2."""
-    mb = MaskBuilder(rgb_frame)
-    with pytest.raises(ValueError, match="at least 2"):
-        mb.compute_clusters(1)
+def test_array_reloads_after_unload(gray_mask_path: Path) -> None:
+    """array can be accessed again after unload() without error."""
+    mask = Mask(gray_mask_path)
+    first = mask.array.copy()
+    mask.unload()
+    assert mask._array_cache is None
+    np.testing.assert_array_equal(mask.array, first)
 
 
-def test_compute_clusters_different_k(rgb_frame: Frame) -> None:
-    """Re-clustering with different K updates n_clusters and produces new labels."""
-    mb = MaskBuilder(rgb_frame, proxy_downscale_factor=2)
-    mb.compute_clusters(2)
-    assert mb._n_clusters == 2
-    mb.compute_clusters(4)
-    assert mb._n_clusters == 4
-    assert mb._labels is not None
-    assert mb._labels.shape == (rgb_frame.shape[0] // 2, rgb_frame.shape[1] // 2)
+# ---------------------------------------------------------------------------
+# downscaled_copy — factor=1 edge case
+# ---------------------------------------------------------------------------
 
 
-def test_compute_clusters_reuses_features_same_weights(rgb_frame: Frame) -> None:
-    """Feature matrix is only computed once when weights are unchanged."""
-    mb = MaskBuilder(rgb_frame)
-    mb.compute_clusters(2)
-    features_id = id(mb._features)
-    mb.compute_clusters(3)
-    assert id(mb._features) == features_id
+def test_downscaled_copy_factor_1_preserves_content(gray_mask: Mask) -> None:
+    """downscaled_copy with factor=1 produces the same boolean content."""
+    proxy = gray_mask.downscaled_copy(1)
+    assert proxy.downscale_factor == 1
+    np.testing.assert_array_equal(proxy.array, gray_mask.array)
 
 
-def test_compute_clusters_recomputes_features_on_weight_change(
-    rgb_frame: Frame,
-) -> None:
-    """Feature matrix is recomputed when weights change."""
-    mb = MaskBuilder(rgb_frame)
-    mb.compute_clusters(2, weights=ClusterWeights(r=1, g=1, b=1, x=0, y=0))
-    features_id = id(mb._features)
-    mb.compute_clusters(2, weights=ClusterWeights(r=1, g=1, b=1, x=1, y=1))
-    assert id(mb._features) != features_id
+# ---------------------------------------------------------------------------
+# _conserve_cache
+# ---------------------------------------------------------------------------
 
 
-def test_compute_clusters_accepts_custom_weights(rgb_frame: Frame) -> None:
-    """compute_clusters succeeds with custom ClusterWeights."""
-    mb = MaskBuilder(rgb_frame, proxy_downscale_factor=2)
-    weights = ClusterWeights(r=1.0, g=0.5, b=2.0, x=0.0, y=0.0)
-    mb.compute_clusters(2, weights=weights)
-    assert mb._n_clusters == 2
-    assert mb._current_weights == weights
+def test_conserve_cache_unloads_if_not_preloaded(gray_mask_path: Path) -> None:
+    """_conserve_cache unloads the array on exit if it wasn't loaded before."""
+    mask = Mask(gray_mask_path)
+    assert mask._array_cache is None
+    with mask._conserve_cache():
+        _ = mask.array
+        assert mask._array_cache is not None
+    assert mask._array_cache is None
 
 
-def test_compute_clusters_resets_mask(rgb_frame: Frame) -> None:
-    """Re-clustering resets mask and foreground_clusters to None."""
-    mb = MaskBuilder(rgb_frame)
-    mb.compute_clusters(2)
-    mb.apply_labels({0})
-    assert mb._mask is not None
-    mb.compute_clusters(3)
-    assert mb._mask is None
-    assert mb._foreground_clusters is None
+def test_conserve_cache_keeps_array_if_preloaded(gray_mask_path: Path) -> None:
+    """_conserve_cache leaves the array loaded if it was already cached."""
+    mask = Mask(gray_mask_path)
+    _ = mask.array  # pre-load
+    assert mask._array_cache is not None
+    with mask._conserve_cache():
+        pass
+    assert mask._array_cache is not None
 
 
-# ===========================================================================
-# MaskBuilder — apply_labels
-# ===========================================================================
+# ---------------------------------------------------------------------------
+# __repr__
+# ---------------------------------------------------------------------------
 
 
-def test_apply_labels_creates_mask(rgb_frame: Frame) -> None:
-    """apply_labels creates a boolean mask at proxy resolution."""
-    mb = MaskBuilder(rgb_frame, proxy_downscale_factor=2)
-    mb.compute_clusters(2)
-    mb.apply_labels({0})
-    assert mb.mask_array.dtype == np.bool_
-    expected_shape = (rgb_frame.shape[0] // 2, rgb_frame.shape[1] // 2)
-    assert mb.mask_array.shape == expected_shape
+def test_repr_with_path(gray_mask_path: Path) -> None:
+    """repr includes the path string and downscale_factor."""
+    mask = Mask(gray_mask_path)
+    r = repr(mask)
+    assert str(gray_mask_path) in r
+    assert "downscale_factor=1" in r
 
 
-def test_apply_labels_before_clustering_raises(rgb_frame: Frame) -> None:
-    """apply_labels raises MaskError when compute_clusters not called."""
-    mb = MaskBuilder(rgb_frame)
-    with pytest.raises(MaskError, match="compute_clusters"):
-        mb.apply_labels({0})
+def test_repr_without_path() -> None:
+    """repr renders '<detached>' for in-memory masks."""
+    mask = Mask._from_array(np.zeros((4, 4), dtype=np.bool_))
+    r = repr(mask)
+    assert "<detached>" in r
+    assert "downscale_factor=1" in r
 
 
-def test_apply_labels_invalid_cluster_raises(rgb_frame: Frame) -> None:
-    """apply_labels raises ValueError for out-of-range cluster index."""
-    mb = MaskBuilder(rgb_frame)
-    mb.compute_clusters(2)
-    with pytest.raises(ValueError, match="out of range"):
-        mb.apply_labels({5})
+# ---------------------------------------------------------------------------
+# mask_rectangle
+# ---------------------------------------------------------------------------
 
 
-def test_apply_labels_empty_set(rgb_frame: Frame) -> None:
-    """apply_labels with empty set produces all-False mask."""
-    mb = MaskBuilder(rgb_frame)
-    mb.compute_clusters(2)
-    mb.apply_labels(set())
-    assert not mb.mask_array.any()
+def test_mask_rectangle_sets_region() -> None:
+    """mask_rectangle sets a rectangular region to the given value."""
+    mask = Mask._from_array(np.zeros((12, 16), dtype=np.bool_))
+    mask.mask_rectangle(0, 0, 8, 6, foreground=True)
+    assert mask.array[0, 0]
+    assert mask.array[5, 7]
+    assert not mask.array[6, 0]
 
 
-def test_apply_labels_all_clusters(rgb_frame: Frame) -> None:
-    """apply_labels with all clusters produces all-True mask."""
-    mb = MaskBuilder(rgb_frame)
-    mb.compute_clusters(2)
-    mb.apply_labels({0, 1})
-    assert mb.mask_array.all()
-
-
-# ===========================================================================
-# MaskBuilder — mask property
-# ===========================================================================
-
-
-def test_mask_property_before_labels_raises(rgb_frame: Frame) -> None:
-    """mask property raises MaskError before any mask is created."""
-    mb = MaskBuilder(rgb_frame)
-    with pytest.raises(MaskError, match="No mask available"):
-        _ = mb.mask_array
-
-
-def test_mask_property_after_compute_no_apply_raises(rgb_frame: Frame) -> None:
-    """mask property raises after compute_clusters but before apply_labels."""
-    mb = MaskBuilder(rgb_frame)
-    mb.compute_clusters(2)
-    with pytest.raises(MaskError):
-        _ = mb.mask_array
-
-
-# ===========================================================================
-# MaskBuilder — mask_rectangle
-# ===========================================================================
-
-
-def test_mask_rectangle_sets_region(builder: MaskBuilder) -> None:
-    """mask_rectangle correctly sets a rectangular region in proxy coordinates."""
-    builder.apply_labels(set())
-    builder.mask_rectangle(0, 0, 8, 6, foreground=True)
-    assert builder.mask_array[0, 0]
-    assert builder.mask_array[5, 7]
-    assert not builder.mask_array[6, 0]
-
-
-def test_mask_rectangle_foreground_false(builder: MaskBuilder) -> None:
+def test_mask_rectangle_clears_region() -> None:
     """mask_rectangle can clear a region to background."""
-    builder.apply_labels({0, 1})
-    builder.mask_rectangle(0, 0, 4, 4, foreground=False)
-    assert not builder.mask_array[0, 0]
-    assert not builder.mask_array[3, 3]
+    mask = Mask._from_array(np.ones((12, 16), dtype=np.bool_))
+    mask.mask_rectangle(0, 0, 4, 4, foreground=False)
+    assert not mask.array[0, 0]
+    assert not mask.array[3, 3]
+    assert mask.array[4, 4]
 
 
-def test_mask_rectangle_before_mask_raises(rgb_frame: Frame) -> None:
-    """mask_rectangle raises MaskError when no mask exists."""
-    mb = MaskBuilder(rgb_frame)
-    with pytest.raises(MaskError, match="mask must exist"):
-        mb.mask_rectangle(0, 0, 4, 4, foreground=True)
-
-
-def test_mask_rectangle_inverted_bounds_raises(builder: MaskBuilder) -> None:
-    """mask_rectangle raises ValueError for x1 <= x0."""
-    builder.apply_labels(set())
-    with pytest.raises(ValueError, match="x1 must be greater"):
-        builder.mask_rectangle(8, 0, 4, 4, foreground=True)
-
-
-def test_mask_rectangle_out_of_bounds_raises(builder: MaskBuilder) -> None:
-    """mask_rectangle raises ValueError when rectangle exceeds proxy image."""
-    builder.apply_labels(set())
-    with pytest.raises(ValueError, match="outside image bounds"):
-        builder.mask_rectangle(0, 0, 100, 100, foreground=True)
-
-
-def test_mask_rectangle_negative_origin_raises(builder: MaskBuilder) -> None:
-    """mask_rectangle raises ValueError for negative coordinates."""
-    builder.apply_labels(set())
-    with pytest.raises(ValueError, match="non-negative"):
-        builder.mask_rectangle(-1, 0, 4, 4, foreground=True)
-
-
-# ===========================================================================
-# MaskBuilder — mask_pixels
-# ===========================================================================
-
-
-def test_mask_pixels_sets_values(builder: MaskBuilder) -> None:
-    """mask_pixels correctly sets specific pixels in proxy coordinates."""
-    builder.apply_labels(set())
-    pixels = np.array([[2, 3], [10, 5]])  # (x, y) in proxy coords; proxy is 16x12
-    builder.mask_pixels(pixels, foreground=True)
-    assert builder.mask_array[3, 2]
-    assert builder.mask_array[5, 10]
-    assert not builder.mask_array[0, 0]
-
-
-def test_mask_pixels_before_mask_raises(rgb_frame: Frame) -> None:
-    """mask_pixels raises MaskError when no mask exists."""
-    mb = MaskBuilder(rgb_frame)
-    with pytest.raises(MaskError, match="mask must exist"):
-        mb.mask_pixels(np.array([[0, 0]]), foreground=True)
-
-
-def test_mask_pixels_wrong_shape_raises(builder: MaskBuilder) -> None:
-    """mask_pixels raises ValueError for non-(N,2) input."""
-    builder.apply_labels(set())
-    with pytest.raises(ValueError, match=r"\(N, 2\)"):
-        builder.mask_pixels(np.array([0, 1, 2]), foreground=True)
-
-
-def test_mask_pixels_out_of_bounds_raises(builder: MaskBuilder) -> None:
-    """mask_pixels raises ValueError for out-of-bounds coordinates."""
-    builder.apply_labels(set())
-    with pytest.raises(ValueError, match="out of image bounds"):
-        builder.mask_pixels(np.array([[9999, 0]]), foreground=True)
-
-
-# ===========================================================================
-# MaskBuilder — edit preservation across re-clustering
-# ===========================================================================
-
-
-def test_edits_preserved_across_reclustering(rgb_frame: Frame) -> None:
-    """Manual edits are replayed after re-clustering and re-labeling."""
-    mb = MaskBuilder(rgb_frame, proxy_downscale_factor=2)
-    mb.compute_clusters(2)
-    mb.apply_labels(set())
-    mb.mask_rectangle(0, 0, 4, 4, foreground=True)
-
-    mb.compute_clusters(2)
-    mb.apply_labels(set())
-
-    assert mb.mask_array[0, 0]
-    assert mb.mask_array[3, 3]
-    assert not mb.mask_array[5, 0]
-
-
-def test_edits_not_reset_by_compute_clusters(rgb_frame: Frame) -> None:
-    """compute_clusters does not clear the edit log."""
-    mb = MaskBuilder(rgb_frame)
-    mb.compute_clusters(2)
-    mb.apply_labels(set())
-    mb.mask_rectangle(0, 0, 4, 4, foreground=True)
-
-    mb.compute_clusters(3)
-    assert len(mb._edits) == 1
-
-
-def test_multiple_edits_replayed_in_order(rgb_frame: Frame) -> None:
-    """Multiple edits are replayed in recorded order."""
-    mb = MaskBuilder(rgb_frame, proxy_downscale_factor=2)
-    mb.compute_clusters(2)
-    mb.apply_labels(set())
-    mb.mask_rectangle(0, 0, 16, 12, foreground=True)
-    mb.mask_rectangle(0, 0, 4, 4, foreground=False)
-
-    mb.compute_clusters(2)
-    mb.apply_labels(set())
-
-    assert not mb.mask_array[0, 0]
-    assert mb.mask_array[0, 5]
-
-
-# ===========================================================================
-# MaskBuilder — build
-# ===========================================================================
-
-
-def test_build_returns_mask(builder: MaskBuilder) -> None:
-    """build() returns a Mask instance."""
-    builder.apply_labels({0})
-    result = builder.build()
-    assert isinstance(result, Mask)
-
-
-def test_build_before_labels_raises(builder: MaskBuilder) -> None:
-    """build() raises MaskError when no mask has been created yet."""
-    with pytest.raises(MaskError):
-        builder.build()
-
-
-def test_build_returns_full_res_shape(builder: MaskBuilder) -> None:
-    """build() returns a Mask at full-resolution dimensions."""
-    builder.apply_labels({0, 1})
-    mask = builder.build()
-    assert mask.shape == (builder._height, builder._width)
-
-
-def test_build_is_detached(builder: MaskBuilder) -> None:
-    """The Mask returned by build() has no backing path."""
-    builder.apply_labels({0})
+def test_mask_rectangle_detaches(gray_mask_path: Path) -> None:
+    """mask_rectangle detaches the mask from its backing path."""
+    mask = Mask(gray_mask_path)
+    assert mask._path is not None
+    mask.mask_rectangle(0, 0, 4, 4, foreground=True)
     with pytest.raises(AttributeError, match="not backed by a file"):
-        _ = builder.build().path
+        _ = mask.path
 
 
-def test_build_is_independent_of_proxy_mask(builder: MaskBuilder) -> None:
-    """Modifying the builder after build() does not affect the returned Mask."""
-    builder.apply_labels({0, 1})
-    mask = builder.build()
-    original = mask.array.copy()
-    builder.mask_rectangle(0, 0, 4, 4, foreground=False)
-    np.testing.assert_array_equal(mask.array, original)
+def test_mask_rectangle_inverted_bounds_raises() -> None:
+    """mask_rectangle raises ValueError for x1 <= x0."""
+    mask = Mask._from_array(np.zeros((12, 16), dtype=np.bool_))
+    with pytest.raises(ValueError, match="x1 must be greater"):
+        mask.mask_rectangle(8, 0, 4, 4, foreground=True)
 
 
-def test_build_all_foreground_is_all_true(rgb_frame: Frame) -> None:
-    """build() with all clusters as foreground produces an all-True mask."""
-    mb = MaskBuilder(rgb_frame, proxy_downscale_factor=2)
-    mb.compute_clusters(2)
-    mb.apply_labels({0, 1})
-    mask = mb.build()
-    assert mask.array.all()
+def test_mask_rectangle_out_of_bounds_raises() -> None:
+    """mask_rectangle raises ValueError when rectangle exceeds image bounds."""
+    mask = Mask._from_array(np.zeros((12, 16), dtype=np.bool_))
+    with pytest.raises(ValueError, match="outside image bounds"):
+        mask.mask_rectangle(0, 0, 100, 100, foreground=True)
 
 
-def test_build_no_foreground_is_all_false(rgb_frame: Frame) -> None:
-    """build() with no foreground clusters produces an all-False mask."""
-    mb = MaskBuilder(rgb_frame, proxy_downscale_factor=2)
-    mb.compute_clusters(2)
-    mb.apply_labels(set())
-    mask = mb.build()
-    assert not mask.array.any()
+def test_mask_rectangle_negative_origin_raises() -> None:
+    """mask_rectangle raises ValueError for negative coordinates."""
+    mask = Mask._from_array(np.zeros((12, 16), dtype=np.bool_))
+    with pytest.raises(ValueError, match="non-negative"):
+        mask.mask_rectangle(-1, 0, 4, 4, foreground=True)
+
+
+# ---------------------------------------------------------------------------
+# mask_pixels
+# ---------------------------------------------------------------------------
+
+
+def test_mask_pixels_sets_values() -> None:
+    """mask_pixels sets specific pixels to the given value."""
+    mask = Mask._from_array(np.zeros((12, 16), dtype=np.bool_))
+    pixels = np.array([[2, 3], [10, 5]])
+    mask.mask_pixels(pixels, foreground=True)
+    assert mask.array[3, 2]
+    assert mask.array[5, 10]
+    assert not mask.array[0, 0]
+
+
+def test_mask_pixels_detaches(gray_mask_path: Path) -> None:
+    """mask_pixels detaches the mask from its backing path."""
+    mask = Mask(gray_mask_path)
+    assert mask._path is not None
+    mask.mask_pixels(np.array([[0, 0]]), foreground=True)
+    with pytest.raises(AttributeError, match="not backed by a file"):
+        _ = mask.path
+
+
+def test_mask_pixels_wrong_shape_raises() -> None:
+    """mask_pixels raises ValueError for non-(N,2) input."""
+    mask = Mask._from_array(np.zeros((12, 16), dtype=np.bool_))
+    with pytest.raises(ValueError, match=r"\(N, 2\)"):
+        mask.mask_pixels(np.array([0, 1, 2]), foreground=True)
+
+
+def test_mask_pixels_out_of_bounds_raises() -> None:
+    """mask_pixels raises ValueError for out-of-bounds coordinates."""
+    mask = Mask._from_array(np.zeros((12, 16), dtype=np.bool_))
+    with pytest.raises(ValueError, match="out of image bounds"):
+        mask.mask_pixels(np.array([[9999, 0]]), foreground=True)
+
+
+# ---------------------------------------------------------------------------
+# plot
+# ---------------------------------------------------------------------------
+
+
+def test_plot_returns_figure() -> None:
+    """plot() returns a Plotly Figure."""
+    mask = Mask._from_array(np.zeros((12, 16), dtype=np.bool_))
+    fig = mask.plot()
+    assert isinstance(fig, go.Figure)
+
+
+def test_plot_has_layout_image() -> None:
+    """plot() adds the mask image as a layout image."""
+    mask = Mask._from_array(np.zeros((8, 10), dtype=np.bool_))
+    fig = mask.plot()
+    assert len(fig.layout.images) > 0
+
+
+def test_plot_has_no_traces() -> None:
+    """plot() adds no data traces."""
+    mask = Mask._from_array(np.zeros((8, 10), dtype=np.bool_))
+    fig = mask.plot()
+    assert len(fig.data) == 0
+
+
+def test_plot_axes_account_for_downscale_factor() -> None:
+    """plot() scales axes by downscale_factor."""
+    mask = Mask._from_array(np.zeros((10, 20), dtype=np.bool_), downscale_factor=4)
+    fig = mask.plot()
+    assert fig.layout.xaxis.range[1] == 80  # 20 * 4
+    assert fig.layout.yaxis.range[0] == 40  # 10 * 4
+
+
+def test_plot_conserves_cache(gray_mask_path: Path) -> None:
+    """plot() does not leave the array loaded if it wasn't before."""
+    mask = Mask(gray_mask_path)
+    assert mask._array_cache is None
+    mask.plot()
+    assert mask._array_cache is None
+
+
+def test_plot_title_shows_filename(gray_mask_path: Path) -> None:
+    """plot() uses the filename as the figure title."""
+    mask = Mask(gray_mask_path)
+    fig = mask.plot()
+    assert gray_mask_path.name in str(fig.layout.title.text)
+
+
+def test_plot_title_detached() -> None:
+    """plot() uses '<detached>' as the title for in-memory masks."""
+    mask = Mask._from_array(np.zeros((4, 4), dtype=np.bool_))
+    fig = mask.plot()
+    assert "<detached>" in str(fig.layout.title.text)

@@ -6,8 +6,8 @@ import numpy as np
 import pytest
 
 from celestack.frame.core import Frame
-from celestack.mask._mask import Mask
-from celestack.mask.core import MaskBuilder
+from celestack.mask._mask_builder import MaskBuilder
+from celestack.mask.core import Mask
 from tests.utils import write_gray_tiff, write_rgb_tiff
 
 

@@ -7,7 +7,7 @@ import pytest
 from celestack.exceptions import MaskError
 from celestack.frame.core import Frame
 from celestack.mask._plotting import plot_clusters, plot_mask
-from celestack.mask.core import MaskBuilder
+from celestack.mask._mask_builder import MaskBuilder
 
 
 # ---------------------------------------------------------------------------

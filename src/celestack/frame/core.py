@@ -183,6 +183,9 @@ class Frame:
 
     def unload(self) -> None:
         """Drop any cached pixel array to free memory."""
+        if self._path is None:
+            msg = "Cannot unload array for an in-memory frame with no backing path"
+            raise ValueError(msg)
         self._array_cache = None
 
     @contextmanager

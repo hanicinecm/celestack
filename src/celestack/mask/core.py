@@ -1,222 +1,289 @@
-"""Public MaskBuilder implementation."""
+"""Boolean foreground mask — the core type of the mask package."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Iterator
+from contextlib import contextmanager
+from pathlib import Path
 
 import numpy as np
 import plotly.graph_objects as go
+import tifffile
 
-from celestack.exceptions import MaskError
-from celestack.frame.core import Frame
-from celestack.mask._clustering import (
-    ClusterWeights,
-    _normalize_rgb,
-    extract_features,
-    run_kmeans,
-)
-from celestack.mask._mask import Mask
-from celestack.mask._plotting import plot_clusters as _plot_clusters
-from celestack.mask._plotting import plot_mask as _plot_mask
+from celestack.exceptions import DownscaleError
+from celestack.frame._backends import EmptyBackend, get_backends, is_tiff_path
+from celestack.frame._constants import CELESTACK_KEY
+from celestack.frame._image_ops import downscale_by_block_average, to_grayscale
+from celestack.frame._plotting import as_png_data_uri
 
 
-@dataclass
-class _RectEdit:
-    x0: int
-    y0: int
-    x1: int
-    y1: int
-    foreground: bool
+class Mask:
+    """Boolean foreground mask backed by an 8-bit grayscale TIFF.
 
+    Construction paths:
 
-@dataclass
-class _PixelEdit:
-    pixels: np.ndarray
-    foreground: bool
+    - ``Mask(path)``: load a mask from any supported image file.
+    - ``Mask._from_array(array)``: create an in-memory mask from a boolean
+      NumPy array (used internally by :class:`MaskBuilder`).
 
-
-_Edit = _RectEdit | _PixelEdit
-
-
-class MaskBuilder:
-    """Stateful builder for foreground/background masks.
-
-    Instantiate with an RGB source image.  All interactive clustering and
-    plotting operates on an internal RGB proxy (downscaled copy) for speed.
-    Call ``compute_clusters``, ``apply_labels``, and optionally refine with
-    ``mask_rectangle`` or ``mask_pixels`` — all in proxy coordinates.  Call
-    ``build()`` to re-run clustering on the full-resolution image and obtain
-    a finished :class:`Mask`.
-
-    Manual edits are recorded and replayed after any re-clustering or
-    re-labeling, so adjustments are preserved across workflow iterations.
-    When ``build()`` is called, edits are scaled up to full-resolution
-    coordinates automatically.
+    ``array`` always returns a 2D ``bool`` array regardless of the on-disk
+    format. Grayscale and RGB inputs are booleanized on first load (non-zero
+    pixels become ``True``). The booleanized array is cached; ``unload()``
+    drops it to free memory.
     """
 
-    def __init__(
-        self,
-        image: Frame,
-        *,
-        proxy_downscale_factor: int = 4,
-        proxy_bit_depth: int = 8,
-    ) -> None:
-        """Initialize with an RGB image for algorithmic mask building.
-
-        A downscaled RGB proxy is created immediately and used for all
-        interactive clustering and plotting.
+    def __init__(self, path: str | Path) -> None:
+        """Load a mask from an image file.
 
         Args:
-            image: Source RGB frame to cluster.  Must be 3-channel.
-            proxy_downscale_factor: Factor by which to downscale the source
-                image for the interactive proxy.  Must be >= 1.
-            proxy_bit_depth: Bit depth of the proxy image (default 8).
+            path: Source image path. TIFF, JPEG, and PNG are supported.
 
         Raises:
-            MaskError: If the image is not 3-channel RGB.
+            FileNotFoundError: If the path does not exist.
+            ValueError: If the image format is unsupported.
         """
-        if len(image.shape) != 3 or image.shape[2] < 3:
-            msg = "MaskBuilder requires a 3-channel RGB image"
-            raise MaskError(msg)
+        resolved = Path(path)
+        if not resolved.exists():
+            msg = f"Mask not found: {resolved}"
+            raise FileNotFoundError(msg)
 
-        self._image: Frame = image
-        self._height: int = image.shape[0]
-        self._width: int = image.shape[1]
-        self._proxy: Frame = image.downscaled_copy(
-            proxy_downscale_factor,
-            bit_depth=proxy_bit_depth,
-            grayscale=False,
-        )
-        self._proxy_height: int = self._proxy.shape[0]
-        self._proxy_width: int = self._proxy.shape[1]
-        self._proxy_downscale_factor: int = proxy_downscale_factor
+        self._path: Path | None = resolved
+        backends = get_backends()
+        suffix = resolved.suffix.lower()
+        if suffix not in backends:
+            msg = f"No backend found for: {resolved.suffix}"
+            raise ValueError(msg)
+        self._backend = backends[suffix]
+        info = self._backend.inspect(resolved)
+        self._shape: tuple[int, int] = (info.shape[0], info.shape[1])
+        self._downscale_factor: int = info.celestack_metadata.downscale_factor
+        self._array_cache: np.ndarray | None = None
 
-        self._features: np.ndarray | None = None
-        self._current_weights: ClusterWeights | None = None
-        self._labels: np.ndarray | None = None
-        self._n_clusters: int | None = None
-        self._foreground_clusters: set[int] | None = None
-        self._mask: np.ndarray | None = None
-        self._edits: list[_Edit] = []
+    @classmethod
+    def _from_array(cls, array: np.ndarray, *, downscale_factor: int = 1) -> Mask:
+        """Create an in-memory mask from a boolean array.
 
-    def compute_clusters(
-        self,
-        n_clusters: int,
-        weights: ClusterWeights | None = None,
-    ) -> None:
-        """Run K-Means clustering on the proxy image.
-
-        Clustering and all subsequent interactive operations use the
-        downscaled proxy for speed.  Can be called multiple times with
-        different values of K or different weights.  Manual edits are
-        preserved and will be replayed when ``apply_labels`` is next called.
-
-        The feature matrix is recomputed only when ``weights`` changes.
+        The array is cast to ``bool`` if it is not already. The resulting
+        mask has no backing path and a ``downscale_factor`` of 1 by default,
+        but this can be overridden.
 
         Args:
-            n_clusters: Number of clusters for K-Means.
-            weights: Per-channel feature weights.  Defaults to
-                ``ClusterWeights()`` (RGB only, no spatial features).
+            array: 2D array of shape (H, W).
+            downscale_factor: Linear downscale factor relative to the full-resolution
+                source.
+
+        Returns:
+            A Mask with no backing path.
+        """
+        instance = cls.__new__(cls)
+        instance._path = None
+        instance._backend = EmptyBackend()
+        instance._shape = (int(array.shape[0]), int(array.shape[1]))
+        instance._downscale_factor = downscale_factor
+        instance._array_cache = np.array(array, dtype=np.bool_)
+        return instance
+
+    def _detach(self) -> None:
+        """Detach the mask from its backing path, making it an in-memory mask."""
+        self._path = None
+        self._backend = EmptyBackend()
+
+    @property
+    def path(self) -> Path:
+        """Return the on-disk path represented by this mask.
 
         Raises:
-            ValueError: If n_clusters < 2.
+            AttributeError: If the mask is not backed by a file.
         """
-        if weights is None:
-            weights = ClusterWeights()
+        if self._path is None:
+            msg = "Mask is not backed by a file"
+            raise AttributeError(msg)
+        return self._path
 
-        if n_clusters < 2:
-            msg = "n_clusters must be at least 2"
+    @property
+    def shape(self) -> tuple[int, int]:
+        """Mask dimensions as ``(height, width)``."""
+        return self._shape
+
+    @property
+    def downscale_factor(self) -> int:
+        """Linear downscale factor relative to the full-resolution source.
+
+        Defaults to 1 for full-resolution and external masks. Proxy masks
+        written by :meth:`save_as` on a downscaled copy embed their factor
+        in Celestack metadata, which is read back on construction.
+        """
+        return self._downscale_factor
+
+    @property
+    def array(self) -> np.ndarray:
+        """Boolean mask array of shape (H, W), loaded lazily on first access.
+
+        Raises:
+            ValueError: If the mask is in-memory with no backing path and
+                no cached array (should not occur in normal usage).
+        """
+        if self._array_cache is None:
+            if self._path is None:
+                msg = "In-memory mask has no backing path and no cached array"
+                raise ValueError(msg)
+            raw = self._backend.load_array(self._path)
+            if raw.dtype == np.bool_:
+                self._array_cache = raw.copy()
+            elif raw.ndim == 3:
+                gray = to_grayscale(raw)
+                self._array_cache = gray != 0
+            else:
+                self._array_cache = raw != 0
+
+        if self._array_cache is None:
+            msg = f"Failed to load mask array from path: {self._path}"
             raise ValueError(msg)
 
-        with self._proxy._conserve_cache():
-            proxy_arr = self._proxy.array
-            if self._features is None or weights != self._current_weights:
-                self._features = extract_features(
-                    proxy_arr, self._proxy.bit_depth, weights
-                )
-                self._current_weights = weights
-            rgb_norm = _normalize_rgb(proxy_arr, self._proxy.bit_depth)
+        return self._array_cache
 
-        self._labels = run_kmeans(
-            self._features,
-            n_clusters,
-            self._proxy_height,
-            self._proxy_width,
-            rgb_norm=rgb_norm,
-        )
-        self._n_clusters = n_clusters
-        self._foreground_clusters = None
-        self._mask = None
+    def unload(self) -> None:
+        """Drop the cached boolean array to free memory."""
+        if self._path is None:
+            msg = "Cannot unload array for an in-memory mask with no backing path"
+            raise ValueError(msg)
+        self._array_cache = None
 
-    def apply_labels(self, foreground_clusters: set[int]) -> None:
-        """Designate which cluster labels are foreground.
+    @contextmanager
+    def _conserve_cache(self) -> Iterator[None]:
+        """Restore the array cache to its prior state on exit.
 
-        Builds the boolean mask (at proxy resolution) from cluster
-        assignments, then replays any manual edits in order.
+        If the array was not loaded before entering the block, it is
+        unloaded when the block exits.
+        """
+        was_loaded = self._array_cache is not None
+        yield
+        if not was_loaded:
+            self.unload()
+
+    def save_as(self, path: str | Path, *, overwrite: bool = False) -> None:
+        """Write the mask to an 8-bit grayscale TIFF and bind this instance to that path.
+
+        Always writes from the boolean array (``True`` → 255, ``False`` → 0).
+        Never copies an existing file verbatim, ensuring the on-disk format
+        is always a clean 8-bit grayscale TIFF. Proxy masks
+        (``downscale_factor > 1``) have Celestack metadata embedded automatically.
+
+        The array cache is conserved: if it was not loaded before the call,
+        it is unloaded afterwards.
 
         Args:
-            foreground_clusters: Set of cluster indices to mark as
-                foreground.
+            path: Destination file path (.tif or .tiff).
+            overwrite: If False (default), raise if the destination exists.
 
         Raises:
-            MaskError: If ``compute_clusters`` has not been called yet.
-            ValueError: If any cluster index is out of range.
+            ValueError: If *path* does not have a TIFF extension.
+            FileExistsError: If the destination exists and *overwrite* is False.
         """
-        if self._labels is None:
-            msg = "compute_clusters must be called before apply_labels"
-            raise MaskError(msg)
-        if self._n_clusters is None:
-            msg = "Internal error: _labels exists but _n_clusters is None"
-            raise MaskError(msg)
+        target = Path(path)
+        if not is_tiff_path(target):
+            msg = f"Output path must be a TIFF file, got: {target.suffix!r}"
+            raise ValueError(msg)
+        if target.exists() and not overwrite:
+            msg = f"File already exists: {target}"
+            raise FileExistsError(msg)
+        target.parent.mkdir(parents=True, exist_ok=True)
 
-        invalid = {c for c in foreground_clusters if not (0 <= c < self._n_clusters)}
-        if invalid:
-            msg = (
-                f"Cluster indices out of range [0, {self._n_clusters}): "
-                f"{sorted(invalid)}"
+        if self._downscale_factor > 1:
+            metadata: dict | None = {
+                CELESTACK_KEY: {"downscale_factor": int(self._downscale_factor)}
+            }
+        else:
+            metadata = None
+
+        with self._conserve_cache():
+            data = self.array.astype(np.uint8) * 255
+            tifffile.imwrite(
+                target,
+                data=data,
+                compression="zlib",
+                photometric="minisblack",
+                metadata=metadata,
             )
+
+        self._path = target
+        backends = get_backends()
+        self._backend = backends[target.suffix.lower()]
+
+    def downscaled_copy(self, downscale_factor: int) -> Mask:
+        """Return a detached downscaled copy of this mask.
+
+        Uses majority voting: blocks where more than half the pixels are
+        foreground become foreground in the downscaled result. The result
+        is held in memory. Call :meth:`save_as` on the returned mask to
+        persist it; the ``downscale_factor`` is embedded in Celestack
+        metadata automatically.
+
+        The array cache is conserved: if it was not loaded before the call,
+        it is unloaded afterwards.
+
+        Args:
+            downscale_factor: Integer linear downscale factor (>= 1).
+
+        Returns:
+            A new detached Mask with the downscaled boolean data.
+
+        Raises:
+            DownscaleError: If called on an already-downscaled mask.
+            ValueError: If *downscale_factor* is less than 1.
+        """
+        if self._downscale_factor != 1:
+            msg = "Cannot downscale a proxy mask"
+            raise DownscaleError(msg)
+        if downscale_factor < 1:
+            msg = "downscale_factor must be >= 1"
             raise ValueError(msg)
 
-        self._foreground_clusters = foreground_clusters
-        base_mask = np.isin(self._labels, list(foreground_clusters))
-        self._replay_edits(base_mask)
-        self._mask = base_mask
+        with self._conserve_cache():
+            averaged = downscale_by_block_average(self.array, downscale_factor)
+            downscaled = averaged > 0.5
+
+        return Mask._from_array(downscaled, downscale_factor=downscale_factor)
 
     def mask_rectangle(
         self, x0: int, y0: int, x1: int, y1: int, *, foreground: bool
     ) -> None:
-        """Manually set a rectangular region of the mask.
+        """Set a rectangular region of the mask to foreground or background.
 
-        Coordinates are in proxy-resolution pixels (i.e., the coordinate
-        space shown by ``plot_clusters`` and ``plot_mask``).  The edit is
-        recorded and replayed after any future re-clustering or re-labeling.
-        When ``build()`` is called, the edit is scaled up to full-resolution
-        automatically.
+        Coordinates are in the mask's native pixel space. The array is
+        loaded if necessary, mutated in place, and the mask is detached
+        from its backing path.
 
         Args:
-            x0: Left column (inclusive), in proxy coordinates.
-            y0: Top row (inclusive), in proxy coordinates.
-            x1: Right column (exclusive), in proxy coordinates.
-            y1: Bottom row (exclusive), in proxy coordinates.
+            x0: Left column (inclusive).
+            y0: Top row (inclusive).
+            x1: Right column (exclusive).
+            y1: Bottom row (exclusive).
             foreground: Whether to mark the region as foreground.
 
         Raises:
-            MaskError: If no mask has been created yet.
             ValueError: If coordinates are out of bounds or inverted.
         """
-        if self._mask is None:
-            msg = "A mask must exist before applying rectangle edits"
-            raise MaskError(msg)
+        height, width = self._shape
+        if x1 <= x0 or y1 <= y0:
+            msg = "x1 must be greater than x0 and y1 must be greater than y0"
+            raise ValueError(msg)
+        if x0 < 0 or y0 < 0:
+            msg = "x0 and y0 must be non-negative"
+            raise ValueError(msg)
+        if x1 > width or y1 > height:
+            msg = "Rectangle extends outside image bounds"
+            raise ValueError(msg)
 
-        self._validate_rect(x0, y0, x1, y1)
-        self._edits.append(_RectEdit(x0=x0, y0=y0, x1=x1, y1=y1, foreground=foreground))
-        self._mask[y0:y1, x0:x1] = foreground
+        self.array[y0:y1, x0:x1] = foreground
+        self._detach()
 
     def mask_pixels(self, pixels: np.ndarray, *, foreground: bool) -> None:
-        """Manually set specific pixels in the mask.
+        """Set specific pixels in the mask to foreground or background.
 
-        Coordinates are in proxy-resolution pixels (i.e., the coordinate
-        space shown by ``plot_clusters`` and ``plot_mask``).
+        Coordinates are in the mask's native pixel space. The array is
+        loaded if necessary, mutated in place, and the mask is detached
+        from its backing path.
 
         Args:
             pixels: Array of shape (N, 2) with (x, y) coordinates, where
@@ -224,154 +291,76 @@ class MaskBuilder:
             foreground: Whether to mark the pixels as foreground.
 
         Raises:
-            MaskError: If no mask has been created yet.
             ValueError: If pixels has an unexpected shape or any
                 coordinates are out of bounds.
         """
-        if self._mask is None:
-            msg = "A mask must exist before applying pixel edits"
-            raise MaskError(msg)
-
         pixels = np.asarray(pixels)
         if pixels.ndim != 2 or pixels.shape[1] != 2:
             msg = "pixels must have shape (N, 2)"
             raise ValueError(msg)
 
+        height, width = self._shape
         if pixels.size > 0:
             xs, ys = pixels[:, 0], pixels[:, 1]
-            if (
-                xs.min() < 0
-                or ys.min() < 0
-                or xs.max() >= self._proxy_width
-                or ys.max() >= self._proxy_height
-            ):
+            if xs.min() < 0 or ys.min() < 0 or xs.max() >= width or ys.max() >= height:
                 msg = "Pixel coordinates out of image bounds"
                 raise ValueError(msg)
 
-        self._edits.append(_PixelEdit(pixels=pixels.copy(), foreground=foreground))
-        self._mask[pixels[:, 1], pixels[:, 0]] = foreground
+        self.array[pixels[:, 1], pixels[:, 0]] = foreground
+        self._detach()
 
-    def build(self) -> Mask:
-        """Re-run clustering on the full-resolution image and return the mask.
+    def plot(self) -> go.Figure:
+        """Visualize the mask as a black-and-white Plotly figure.
 
-        Uses the same weights and foreground cluster selection as the
-        interactive proxy session.  Manual edits are scaled up to
-        full-resolution coordinates and replayed.  The result is a detached
-        in-memory :class:`Mask` at full resolution.
+        Axes are in full-resolution pixel coordinates, accounting for
+        ``downscale_factor``. The array cache is conserved: if the pixel
+        data was not loaded before the call, it is unloaded afterwards.
 
         Returns:
-            A full-resolution Mask wrapping the clustered boolean array.
-
-        Raises:
-            MaskError: If no mask has been created yet. Call
-                ``apply_labels`` first.
+            A Plotly figure with the mask rendered as a static PNG image.
         """
-        if (
-            self._foreground_clusters is None
-            or self._n_clusters is None
-            or self._current_weights is None
-        ):
-            msg = "No mask available; call apply_labels first"
-            raise MaskError(msg)
+        with self._conserve_cache():
+            mask_arr = self.array
+            full_h = mask_arr.shape[0] * self._downscale_factor
+            full_w = mask_arr.shape[1] * self._downscale_factor
 
-        with self._image._conserve_cache():
-            arr = self._image.array
-            rgb_norm = _normalize_rgb(arr, self._image.bit_depth)
-            features = extract_features(
-                arr, self._image.bit_depth, self._current_weights
+            fig = go.Figure()
+            fig.add_layout_image(
+                dict(
+                    source=as_png_data_uri(mask_arr),
+                    xref="x",
+                    yref="y",
+                    x=0,
+                    y=0,
+                    sizex=full_w,
+                    sizey=full_h,
+                    sizing="stretch",
+                    layer="below",
+                )
             )
-            labels = run_kmeans(
-                features,
-                self._n_clusters,
-                self._height,
-                self._width,
-                rgb_norm=rgb_norm,
+            title = self._path.name if self._path is not None else "<detached>"
+            fig.update_layout(
+                title=title,
+                xaxis=dict(
+                    range=[0, full_w],
+                    visible=False,
+                    showgrid=False,
+                    zeroline=False,
+                ),
+                yaxis=dict(
+                    range=[full_h, 0],
+                    visible=False,
+                    showgrid=False,
+                    zeroline=False,
+                    scaleanchor="x",
+                ),
+                margin=dict(l=0, r=0, t=30, b=0),
+                paper_bgcolor="rgba(255,255,255,0)",
+                plot_bgcolor="rgba(255,255,255,0)",
             )
+        return fig
 
-        full_mask = np.isin(labels, list(self._foreground_clusters))
-        self._replay_edits(full_mask, scale=self._proxy_downscale_factor)
-        return Mask._from_array(full_mask)
-
-    def plot_clusters(self) -> go.Figure:
-        """Visualize cluster labels on the proxy image as a color-coded plot.
-
-        Returns:
-            Plotly figure with color-coded cluster regions and a legend.
-
-        Raises:
-            MaskError: If ``compute_clusters`` has not been called yet.
-        """
-        if self._labels is None:
-            msg = "compute_clusters must be called before plot_clusters"
-            raise MaskError(msg)
-
-        return _plot_clusters(self._labels)
-
-    def plot_mask(self) -> go.Figure:
-        """Visualize the current proxy mask as a black-and-white plot.
-
-        Returns:
-            Plotly figure with the mask rendered as a black-and-white image.
-
-        Raises:
-            MaskError: If no mask has been created yet.
-        """
-        if self._mask is None:
-            msg = "A mask must exist before calling plot_mask"
-            raise MaskError(msg)
-
-        return _plot_mask(self._mask)
-
-    @property
-    def mask_array(self) -> np.ndarray:
-        """Current boolean foreground mask at proxy resolution with shape (H, W).
-
-        Raises:
-            MaskError: If no mask has been created yet. Call
-                ``apply_labels`` first.
-        """
-        if self._mask is None:
-            msg = "No mask available; call apply_labels first"
-            raise MaskError(msg)
-        return self._mask
-
-    def _validate_rect(self, x0: int, y0: int, x1: int, y1: int) -> None:
-        """Validate rectangle coordinates against proxy image bounds.
-
-        Raises:
-            ValueError: If coordinates are inverted or outside bounds.
-        """
-        if x1 <= x0 or y1 <= y0:
-            msg = "x1 must be greater than x0 and y1 must be greater than y0"
-            raise ValueError(msg)
-        if x0 < 0 or y0 < 0:
-            msg = "x0 and y0 must be non-negative"
-            raise ValueError(msg)
-        if x1 > self._proxy_width or y1 > self._proxy_height:
-            msg = "Rectangle extends outside image bounds"
-            raise ValueError(msg)
-
-    def _replay_edits(self, mask: np.ndarray, scale: int = 1) -> None:
-        """Apply all recorded manual edits to a mask array in place.
-
-        Rectangle and pixel coordinates are multiplied by ``scale`` before
-        application, allowing proxy-coordinate edits to be replayed on a
-        full-resolution mask.
-
-        Args:
-            mask: Boolean mask array to modify.
-            scale: Coordinate scale factor (1 for proxy, proxy_downscale_factor
-                for full-res).
-        """
-        for edit in self._edits:
-            if isinstance(edit, _RectEdit):
-                mask[
-                    edit.y0 * scale : edit.y1 * scale,
-                    edit.x0 * scale : edit.x1 * scale,
-                ] = edit.foreground
-            elif isinstance(edit, _PixelEdit):
-                for x, y in edit.pixels:
-                    mask[
-                        int(y) * scale : (int(y) + 1) * scale,
-                        int(x) * scale : (int(x) + 1) * scale,
-                    ] = edit.foreground
+    def __repr__(self) -> str:
+        """Return a concise debug representation of the mask."""
+        path_str = str(self._path) if self._path is not None else "<detached>"
+        return f"Mask({path_str!r}, downscale_factor={self._downscale_factor})"

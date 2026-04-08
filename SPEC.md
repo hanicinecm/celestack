@@ -89,39 +89,39 @@ Universal image container. Represents any single image in the system — light f
 
 ### Mask
 
-Boolean foreground mask. A lightweight, file-backed container for a single-channel boolean image. Masks are distinct from `Frame` — they carry no EXIF metadata and no timestamp.
+Boolean foreground mask. The core type of the `mask` sub-package — a lightweight, file-backed container for a single-channel boolean image. Masks are distinct from `Frame` — they carry no EXIF metadata and no timestamp.
 
 - **Constructor**: `Mask(path)`. Loads from any supported image format (TIFF, JPEG, PNG). Any non-zero pixel becomes foreground (`True`). For Celestack-written proxy masks, also reads embedded Celestack metadata (downscale factor).
 - **Lazy array access**: `mask.array` loads and booleanizes the image on first access, caching the result as a `bool` array of shape `(H, W)`. `mask.unload()` drops the cache to free memory.
 - **Saving**: `mask.save_as(path, *, overwrite=False) → None` writes the boolean array to an 8-bit grayscale TIFF (`True` → 255, `False` → 0) and binds the instance to that path. Always writes from the boolean array — never copies verbatim — to guarantee a clean on-disk format. Proxy masks (`downscale_factor > 1`) have Celestack metadata embedded automatically. Raises `FileExistsError` if the destination exists and `overwrite=False`.
 - **Downscaling**: `mask.downscaled_copy(downscale_factor) → Mask` returns a detached in-memory mask using majority voting (blocks where more than half the pixels are foreground become foreground). The caller persists it via `save_as`, which embeds `downscale_factor` in Celestack metadata automatically. No timestamp is required or stored.
+- **Manual editing**: `mask.mask_rectangle(x0, y0, x1, y1, *, foreground)` and `mask.mask_pixels(pixels, *, foreground)` mutate the boolean array in place and detach the mask from its backing path. Coordinates are in the mask's native pixel space. These are fire-and-forget operations with no edit recording — available on any `Mask` instance regardless of how it was created.
+- **Plotting**: `mask.plot() → Figure` renders the boolean mask as a black-and-white PNG on a Plotly figure with axes in full-resolution pixel coordinates (accounting for `downscale_factor`). Lightweight — no per-pixel trace. The caller decides whether to `.show()` it or embed it.
 - **Path**: `mask.path` returns the on-disk path. Raises `AttributeError` for detached (in-memory) masks.
 - **Downscale factor**: read-only, from embedded Celestack metadata. Defaults to 1 for full-resolution and external masks.
 - **In-memory construction**: `Mask._from_array(array)` creates a mask from a boolean NumPy array with no backing path. Used internally by `MaskBuilder.build()`.
 
 ### MaskBuilder
 
-Builds a foreground mask algorithmically from an RGB source image. Runs K-Means clustering in a configurable feature space (RGB channels and/or normalized spatial coordinates), presents clusters for user labeling, and allows masking/unmasking with a rectangle or a set of pixels.
+Builds a foreground mask algorithmically from an RGB source image via K-Means clustering. The builder is a tool specifically for clustering — it produces an approximate mask from cluster labels. Any further manual editing (rectangle/pixel masking) is done on the `Mask` object returned by `build()`.
 
 For the **external mask** path, the project caller loads the user-supplied file directly as `Mask(path)` — no `MaskBuilder` is involved.
 
-**Proxy-based interactive workflow**: On construction, `MaskBuilder` creates an internal downscaled RGB proxy of the source image (`proxy_downscale_factor`, `proxy_bit_depth` parameters). All clustering, plotting, and interactive editing operates on this proxy for speed. The final `build()` call re-runs clustering on the full-resolution image using the same parameters.
+**Proxy-based workflow**: On construction, `MaskBuilder` creates an internal downscaled RGB proxy of the source image (`proxy_downscale_factor`, `proxy_bit_depth` parameters). All clustering and plotting operates on this proxy for speed. The final `build()` call re-runs clustering on the full-resolution image using the same parameters.
 
 **`ClusterWeights` dataclass**: Controls which feature dimensions are included in clustering and how strongly each is weighted. Fields: `r`, `g`, `b` (RGB channel weights, default `1.0`) and `x`, `y` (normalized spatial coordinate weights, default `0.0`). Setting a weight to `0` excludes that feature dimension from the feature matrix entirely. Default weights use RGB only (no spatial). Exported publicly from `celestack.mask`.
 
 **Stable cluster ordering**: After K-Means, cluster labels are remapped so that cluster IDs are assigned in ascending order of mean (R, G, B) centroid — making the ordering deterministic and independent of K-Means initialization. This ensures the same label indices refer to the same semantic clusters whether clustering is run on the proxy or the full-resolution image.
 
-**`compute_clusters(n_clusters, weights=ClusterWeights())`**: Runs K-Means on the proxy. The feature matrix is recomputed only when `weights` changes; re-calling with the same weights and a different K reuses the cached features. Manual edits are preserved and replayed on the next `apply_labels` call.
+**`compute_clusters(n_clusters, weights=ClusterWeights())`**: Runs K-Means on the proxy. The feature matrix is recomputed only when `weights` changes; re-calling with the same weights and a different K reuses the cached features.
 
-**`apply_labels(foreground_clusters)`**: Designates which cluster indices are foreground. Builds the proxy-resolution boolean mask and replays any recorded manual edits.
-
-**`mask_rectangle` / `mask_pixels`**: Manual overrides in proxy coordinates (the same coordinate space shown by the plot methods). Edits are recorded and replayed after re-clustering. When `build()` is called, edits are scaled up to full-resolution coordinates automatically.
+**`apply_labels(foreground_clusters)`**: Designates which cluster indices are foreground. Builds the proxy-resolution boolean mask from cluster assignments.
 
 **Plotting**: `plot_clusters()` returns a Plotly figure with a static color-coded PNG of the proxy cluster map and a non-interactive legend showing cluster indices. `plot_mask()` returns a static black-and-white PNG of the proxy mask. Neither method embeds per-pixel Plotly traces — all pixel data is serialized as a PNG data URI for rendering speed.
 
-**`build()`**: Re-runs feature extraction and K-Means at full resolution using the same weights, cluster count, and centroid-based label ordering as the proxy session. Replays all recorded edits scaled by `proxy_downscale_factor`. Returns a detached in-memory full-resolution `Mask`. The project then saves it to `frames/full_res/mask.tiff` and writes the proxy to `frames/proxy/mask.tiff`.
+**`build()`**: Re-runs feature extraction and K-Means at full resolution using the same weights, cluster count, and centroid-based label ordering as the proxy session. Returns a detached in-memory full-resolution `Mask`. The project then saves it to `frames/full_res/mask.tiff` and writes the proxy to `frames/proxy/mask.tiff`.
 
-The algorithmic path requires interactive user input (cluster labeling, region edits). To preserve the principle that API methods are the single source of truth for both CLI and GUI, mask building is decomposed into multiple atomic, non-interactive methods on Project (e.g. compute clusters, apply labels, modify region). Each method takes concrete inputs and produces concrete outputs. The interactive loop — presenting results and collecting user choices — lives entirely in the CLI/GUI layer, which orchestrates these atomic methods.
+The algorithmic path requires interactive user input (cluster labeling). To preserve the principle that API methods are the single source of truth for both CLI and GUI, mask building is decomposed into multiple atomic, non-interactive methods on Project (e.g. compute clusters, apply labels). Each method takes concrete inputs and produces concrete outputs. The interactive loop — presenting results and collecting user choices — lives entirely in the CLI/GUI layer, which orchestrates these atomic methods. Manual mask refinement (rectangle/pixel edits) is done on the `Mask` instance after `build()`.
 
 ### StarCatalog
 
