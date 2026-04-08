@@ -8,6 +8,7 @@ import tifffile
 
 from celestack.exceptions import DownscaleError, MaskError
 from celestack.frame.core import Frame
+from celestack.mask._clustering import ClusterWeights
 from celestack.mask._mask import Mask
 from celestack.mask.core import MaskBuilder
 
@@ -357,6 +358,21 @@ def test_init_accepts_rgb_frame(rgb_frame: Frame) -> None:
     assert mb._width == rgb_frame.shape[1]
 
 
+def test_init_creates_proxy(rgb_frame: Frame) -> None:
+    """MaskBuilder creates a downscaled proxy on construction."""
+    mb = MaskBuilder(rgb_frame, proxy_downscale_factor=2)
+    assert mb._proxy is not None
+    assert mb._proxy_height == rgb_frame.shape[0] // 2
+    assert mb._proxy_width == rgb_frame.shape[1] // 2
+
+
+def test_init_proxy_is_rgb(rgb_frame: Frame) -> None:
+    """The proxy retains 3 channels (not grayscale)."""
+    mb = MaskBuilder(rgb_frame, proxy_downscale_factor=2)
+    assert len(mb._proxy.shape) == 3
+    assert mb._proxy.shape[2] == 3
+
+
 def test_init_rejects_grayscale(gray_mask_path: Path) -> None:
     """MaskBuilder rejects a grayscale Frame with MaskError."""
     frame = Frame(gray_mask_path)
@@ -370,11 +386,12 @@ def test_init_rejects_grayscale(gray_mask_path: Path) -> None:
 
 
 def test_compute_clusters_stores_labels(rgb_frame: Frame) -> None:
-    """Labels array has correct shape after clustering."""
-    mb = MaskBuilder(rgb_frame)
+    """Labels array has proxy shape after clustering."""
+    mb = MaskBuilder(rgb_frame, proxy_downscale_factor=2)
     mb.compute_clusters(3)
     assert mb._labels is not None
-    assert mb._labels.shape == rgb_frame.shape[:2]
+    expected_shape = (rgb_frame.shape[0] // 2, rgb_frame.shape[1] // 2)
+    assert mb._labels.shape == expected_shape
 
 
 def test_compute_clusters_rejects_k_less_than_2(rgb_frame: Frame) -> None:
@@ -385,23 +402,43 @@ def test_compute_clusters_rejects_k_less_than_2(rgb_frame: Frame) -> None:
 
 
 def test_compute_clusters_different_k(rgb_frame: Frame) -> None:
-    """Re-clustering with different K updates n_clusters."""
-    mb = MaskBuilder(rgb_frame)
+    """Re-clustering with different K updates n_clusters and produces new labels."""
+    mb = MaskBuilder(rgb_frame, proxy_downscale_factor=2)
     mb.compute_clusters(2)
     assert mb._n_clusters == 2
     mb.compute_clusters(4)
     assert mb._n_clusters == 4
     assert mb._labels is not None
-    assert len(set(mb._labels.flatten())) == 4
+    assert mb._labels.shape == (rgb_frame.shape[0] // 2, rgb_frame.shape[1] // 2)
 
 
-def test_compute_clusters_reuses_features(rgb_frame: Frame) -> None:
-    """Feature matrix is only computed once across multiple compute_clusters calls."""
+def test_compute_clusters_reuses_features_same_weights(rgb_frame: Frame) -> None:
+    """Feature matrix is only computed once when weights are unchanged."""
     mb = MaskBuilder(rgb_frame)
     mb.compute_clusters(2)
     features_id = id(mb._features)
     mb.compute_clusters(3)
     assert id(mb._features) == features_id
+
+
+def test_compute_clusters_recomputes_features_on_weight_change(
+    rgb_frame: Frame,
+) -> None:
+    """Feature matrix is recomputed when weights change."""
+    mb = MaskBuilder(rgb_frame)
+    mb.compute_clusters(2, weights=ClusterWeights(r=1, g=1, b=1, x=0, y=0))
+    features_id = id(mb._features)
+    mb.compute_clusters(2, weights=ClusterWeights(r=1, g=1, b=1, x=1, y=1))
+    assert id(mb._features) != features_id
+
+
+def test_compute_clusters_accepts_custom_weights(rgb_frame: Frame) -> None:
+    """compute_clusters succeeds with custom ClusterWeights."""
+    mb = MaskBuilder(rgb_frame, proxy_downscale_factor=2)
+    weights = ClusterWeights(r=1.0, g=0.5, b=2.0, x=0.0, y=0.0)
+    mb.compute_clusters(2, weights=weights)
+    assert mb._n_clusters == 2
+    assert mb._current_weights == weights
 
 
 def test_compute_clusters_resets_mask(rgb_frame: Frame) -> None:
@@ -421,12 +458,13 @@ def test_compute_clusters_resets_mask(rgb_frame: Frame) -> None:
 
 
 def test_apply_labels_creates_mask(rgb_frame: Frame) -> None:
-    """apply_labels creates a boolean mask with correct shape."""
-    mb = MaskBuilder(rgb_frame)
+    """apply_labels creates a boolean mask at proxy resolution."""
+    mb = MaskBuilder(rgb_frame, proxy_downscale_factor=2)
     mb.compute_clusters(2)
     mb.apply_labels({0})
     assert mb.mask_array.dtype == np.bool_
-    assert mb.mask_array.shape == rgb_frame.shape[:2]
+    expected_shape = (rgb_frame.shape[0] // 2, rgb_frame.shape[1] // 2)
+    assert mb.mask_array.shape == expected_shape
 
 
 def test_apply_labels_before_clustering_raises(rgb_frame: Frame) -> None:
@@ -486,7 +524,7 @@ def test_mask_property_after_compute_no_apply_raises(rgb_frame: Frame) -> None:
 
 
 def test_mask_rectangle_sets_region(builder: MaskBuilder) -> None:
-    """mask_rectangle correctly sets a rectangular region."""
+    """mask_rectangle correctly sets a rectangular region in proxy coordinates."""
     builder.apply_labels(set())
     builder.mask_rectangle(0, 0, 8, 6, foreground=True)
     assert builder.mask_array[0, 0]
@@ -517,7 +555,7 @@ def test_mask_rectangle_inverted_bounds_raises(builder: MaskBuilder) -> None:
 
 
 def test_mask_rectangle_out_of_bounds_raises(builder: MaskBuilder) -> None:
-    """mask_rectangle raises ValueError when rectangle exceeds image."""
+    """mask_rectangle raises ValueError when rectangle exceeds proxy image."""
     builder.apply_labels(set())
     with pytest.raises(ValueError, match="outside image bounds"):
         builder.mask_rectangle(0, 0, 100, 100, foreground=True)
@@ -536,9 +574,9 @@ def test_mask_rectangle_negative_origin_raises(builder: MaskBuilder) -> None:
 
 
 def test_mask_pixels_sets_values(builder: MaskBuilder) -> None:
-    """mask_pixels correctly sets specific pixels."""
+    """mask_pixels correctly sets specific pixels in proxy coordinates."""
     builder.apply_labels(set())
-    pixels = np.array([[2, 3], [10, 5]])  # (x, y)
+    pixels = np.array([[2, 3], [10, 5]])  # (x, y) in proxy coords; proxy is 16x12
     builder.mask_pixels(pixels, foreground=True)
     assert builder.mask_array[3, 2]
     assert builder.mask_array[5, 10]
@@ -573,7 +611,7 @@ def test_mask_pixels_out_of_bounds_raises(builder: MaskBuilder) -> None:
 
 def test_edits_preserved_across_reclustering(rgb_frame: Frame) -> None:
     """Manual edits are replayed after re-clustering and re-labeling."""
-    mb = MaskBuilder(rgb_frame)
+    mb = MaskBuilder(rgb_frame, proxy_downscale_factor=2)
     mb.compute_clusters(2)
     mb.apply_labels(set())
     mb.mask_rectangle(0, 0, 4, 4, foreground=True)
@@ -599,7 +637,7 @@ def test_edits_not_reset_by_compute_clusters(rgb_frame: Frame) -> None:
 
 def test_multiple_edits_replayed_in_order(rgb_frame: Frame) -> None:
     """Multiple edits are replayed in recorded order."""
-    mb = MaskBuilder(rgb_frame)
+    mb = MaskBuilder(rgb_frame, proxy_downscale_factor=2)
     mb.compute_clusters(2)
     mb.apply_labels(set())
     mb.mask_rectangle(0, 0, 16, 12, foreground=True)
@@ -630,14 +668,21 @@ def test_build_before_labels_raises(builder: MaskBuilder) -> None:
         builder.build()
 
 
-def test_build_array_matches(builder: MaskBuilder) -> None:
-    """build() array matches the internal mask numpy array."""
+def test_build_returns_full_res_shape(builder: MaskBuilder) -> None:
+    """build() returns a Mask at full-resolution dimensions."""
     builder.apply_labels({0, 1})
     mask = builder.build()
-    np.testing.assert_array_equal(mask.array, builder.mask_array)
+    assert mask.shape == (builder._height, builder._width)
 
 
-def test_build_is_independent_copy(builder: MaskBuilder) -> None:
+def test_build_is_detached(builder: MaskBuilder) -> None:
+    """The Mask returned by build() has no backing path."""
+    builder.apply_labels({0})
+    with pytest.raises(AttributeError, match="not backed by a file"):
+        _ = builder.build().path
+
+
+def test_build_is_independent_of_proxy_mask(builder: MaskBuilder) -> None:
     """Modifying the builder after build() does not affect the returned Mask."""
     builder.apply_labels({0, 1})
     mask = builder.build()
@@ -646,8 +691,19 @@ def test_build_is_independent_copy(builder: MaskBuilder) -> None:
     np.testing.assert_array_equal(mask.array, original)
 
 
-def test_build_is_detached(builder: MaskBuilder) -> None:
-    """The Mask returned by build() has no backing path."""
-    builder.apply_labels({0})
-    with pytest.raises(AttributeError, match="not backed by a file"):
-        _ = builder.build().path
+def test_build_all_foreground_is_all_true(rgb_frame: Frame) -> None:
+    """build() with all clusters as foreground produces an all-True mask."""
+    mb = MaskBuilder(rgb_frame, proxy_downscale_factor=2)
+    mb.compute_clusters(2)
+    mb.apply_labels({0, 1})
+    mask = mb.build()
+    assert mask.array.all()
+
+
+def test_build_no_foreground_is_all_false(rgb_frame: Frame) -> None:
+    """build() with no foreground clusters produces an all-False mask."""
+    mb = MaskBuilder(rgb_frame, proxy_downscale_factor=2)
+    mb.compute_clusters(2)
+    mb.apply_labels(set())
+    mask = mb.build()
+    assert not mask.array.any()

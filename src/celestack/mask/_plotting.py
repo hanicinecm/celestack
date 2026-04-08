@@ -9,9 +9,6 @@ import plotly.graph_objects as go
 
 from celestack.frame._plotting import as_png_data_uri
 
-# Alpha (0-255) for overlay traces.
-_OVERLAY_ALPHA: int = 110
-
 
 def _cluster_palette(n: int) -> list[tuple[int, ...]]:
     """Generate n visually distinct RGB colors via HSV hue rotation."""
@@ -44,38 +41,30 @@ def _base_layout(height: int, width: int, title: str) -> dict:
     )
 
 
-def plot_clusters(
-    image_array: np.ndarray,
-    labels: np.ndarray,
-    bit_depth: int,
-) -> go.Figure:
-    """Visualize K-Means cluster labels overlaid on the source image.
+def plot_clusters(labels: np.ndarray) -> go.Figure:
+    """Visualize K-Means cluster labels as a color-coded image.
+
+    Renders each cluster as a solid color block.  A non-interactive legend
+    maps each color to its cluster index.
 
     Args:
-        image_array: RGB image array with shape (H, W, 3).
         labels: Cluster label array with shape (H, W).
-        bit_depth: Source bit depth for preview scaling.
 
     Returns:
-        Plotly figure with the image as background and color-coded
-        cluster regions overlaid.
+        Plotly figure with a static PNG cluster image and a legend.
     """
-    height, width = image_array.shape[:2]
+    height, width = labels.shape
     n_clusters = int(labels.max()) + 1
     palette = _cluster_palette(n_clusters)
 
-    overlay = np.zeros((height, width, 4), dtype=np.uint8)
-    for cluster_id, (r, g, b) in enumerate(palette):
-        mask = labels == cluster_id
-        overlay[mask, 0] = r
-        overlay[mask, 1] = g
-        overlay[mask, 2] = b
-        overlay[mask, 3] = _OVERLAY_ALPHA
+    cluster_image = np.zeros((height, width, 3), dtype=np.uint8)
+    for cluster_id, color in enumerate(palette):
+        cluster_image[labels == cluster_id] = color
 
     fig = go.Figure()
     fig.add_layout_image(
         dict(
-            source=as_png_data_uri(image_array),
+            source=as_png_data_uri(cluster_image),
             xref="x",
             yref="y",
             x=0,
@@ -86,45 +75,42 @@ def plot_clusters(
             layer="below",
         )
     )
-    fig.add_trace(
-        go.Image(
-            z=overlay,
-            x0=0,
-            y0=0,
-            dx=1,
-            dy=1,
+
+    for cluster_id, (r, g, b) in enumerate(palette):
+        fig.add_trace(
+            go.Scatter(
+                x=[None],
+                y=[None],
+                mode="markers",
+                marker=dict(color=f"rgb({r},{g},{b})", size=12, symbol="square"),
+                name=f"Cluster {cluster_id}",
+                showlegend=True,
+            )
         )
-    )
-    fig.update_layout(_base_layout(height, width, f"Cluster Map (K={n_clusters})"))
+
+    layout = _base_layout(height, width, f"Cluster Map (K={n_clusters})")
+    layout["legend"] = dict(itemclick=False, itemdoubleclick=False)
+    fig.update_layout(layout)
     return fig
 
 
-def plot_mask(
-    image_array: np.ndarray,
-    mask: np.ndarray,
-    bit_depth: int,
-) -> go.Figure:
-    """Visualize a boolean mask overlaid on the source image.
+def plot_mask(mask: np.ndarray) -> go.Figure:
+    """Visualize a boolean mask as a black-and-white image.
+
+    Foreground pixels are white; background pixels are black.
 
     Args:
-        image_array: Image array with shape (H, W, ...).
         mask: Boolean mask array with shape (H, W).
-        bit_depth: Source bit depth for preview scaling.
 
     Returns:
-        Plotly figure with the image as background and a semi-transparent
-        red overlay highlighting foreground regions.
+        Plotly figure with a static PNG mask image.
     """
-    height, width = mask.shape[:2]
-
-    overlay = np.zeros((height, width, 4), dtype=np.uint8)
-    overlay[mask, 0] = 220
-    overlay[mask, 3] = _OVERLAY_ALPHA
+    height, width = mask.shape
 
     fig = go.Figure()
     fig.add_layout_image(
         dict(
-            source=as_png_data_uri(image_array),
+            source=as_png_data_uri(mask),
             xref="x",
             yref="y",
             x=0,
@@ -133,15 +119,6 @@ def plot_mask(
             sizey=height,
             sizing="stretch",
             layer="below",
-        )
-    )
-    fig.add_trace(
-        go.Image(
-            z=overlay,
-            x0=0,
-            y0=0,
-            dx=1,
-            dy=1,
         )
     )
     fig.update_layout(_base_layout(height, width, "Mask Preview"))
