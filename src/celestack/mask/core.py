@@ -14,7 +14,7 @@ from celestack.exceptions import DownscaleError
 from celestack.frame._backends import EmptyBackend, get_backends, is_tiff_path
 from celestack.frame._constants import CELESTACK_KEY
 from celestack.frame._image_ops import downscale_by_block_average, to_grayscale
-from celestack.frame._plotting import as_png_data_uri
+from celestack.mask._plotting import plot_mask
 
 
 class Mask:
@@ -320,45 +320,12 @@ class Mask:
             A Plotly figure with the mask rendered as a static PNG image.
         """
         with self._conserve_cache():
-            mask_arr = self.array
-            full_h = mask_arr.shape[0] * self._downscale_factor
-            full_w = mask_arr.shape[1] * self._downscale_factor
-
-            fig = go.Figure()
-            fig.add_layout_image(
-                dict(
-                    source=as_png_data_uri(mask_arr),
-                    xref="x",
-                    yref="y",
-                    x=0,
-                    y=0,
-                    sizex=full_w,
-                    sizey=full_h,
-                    sizing="stretch",
-                    layer="below",
-                )
+            figure = plot_mask(
+                self.array,
+                title=self._path.name if self._path is not None else "<detached>",
+                downscale_factor=self._downscale_factor,
             )
-            title = self._path.name if self._path is not None else "<detached>"
-            fig.update_layout(
-                title=title,
-                xaxis=dict(
-                    range=[0, full_w],
-                    visible=False,
-                    showgrid=False,
-                    zeroline=False,
-                ),
-                yaxis=dict(
-                    range=[full_h, 0],
-                    visible=False,
-                    showgrid=False,
-                    zeroline=False,
-                    scaleanchor="x",
-                ),
-                margin=dict(l=0, r=0, t=30, b=0),
-                paper_bgcolor="rgba(255,255,255,0)",
-                plot_bgcolor="rgba(255,255,255,0)",
-            )
-        return fig
+        return figure
 
     def __repr__(self) -> str:
         """Return a concise debug representation of the mask."""

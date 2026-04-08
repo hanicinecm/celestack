@@ -428,7 +428,7 @@ class Frame:
         with self._conserve_cache():
             figure = plot_frame(
                 self.array,
-                title=self._path.name if self._path is not None else "<memory>",
+                title=self._path.name if self._path is not None else "<detached>",
                 bit_depth=self.bit_depth,
                 downscale_factor=self.downscale_factor,
                 show_pixels=show_pixels,

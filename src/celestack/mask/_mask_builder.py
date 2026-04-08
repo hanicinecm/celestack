@@ -15,7 +15,6 @@ from celestack.mask._clustering import (
 )
 from celestack.mask.core import Mask
 from celestack.mask._plotting import plot_clusters as _plot_clusters
-from celestack.mask._plotting import plot_mask as _plot_mask
 
 
 class MaskBuilder:
@@ -23,9 +22,9 @@ class MaskBuilder:
 
     Instantiate with an RGB source image.  All clustering and plotting
     operates on an internal RGB proxy (downscaled copy) for speed.  Call
-    ``compute_clusters``, ``apply_labels``, inspect via ``plot_clusters``
-    / ``plot_mask``, and finally ``build()`` to re-run clustering on the
-    full-resolution image and obtain a finished :class:`Mask`.
+    ``compute_clusters``, ``apply_labels``, inspect via ``plot_clusters``,
+    and finally ``build()`` to re-run clustering on the full-resolution
+    image and obtain a finished :class:`Mask`.
     """
 
     def __init__(
@@ -103,9 +102,7 @@ class MaskBuilder:
 
         proxy_arr = self._proxy.array
         if self._features is None or weights != self._current_weights:
-            self._features = extract_features(
-                proxy_arr, self._proxy.bit_depth, weights
-            )
+            self._features = extract_features(proxy_arr, self._proxy.bit_depth, weights)
             self._current_weights = weights
         rgb_norm = _normalize_rgb(proxy_arr, self._proxy.bit_depth)
 
@@ -205,21 +202,6 @@ class MaskBuilder:
             raise MaskError(msg)
 
         return _plot_clusters(self._labels)
-
-    def plot_mask(self) -> go.Figure:
-        """Visualize the current proxy mask as a black-and-white plot.
-
-        Returns:
-            Plotly figure with the mask rendered as a black-and-white image.
-
-        Raises:
-            MaskError: If no mask has been created yet.
-        """
-        if self._mask is None:
-            msg = "A mask must exist before calling plot_mask"
-            raise MaskError(msg)
-
-        return _plot_mask(self._mask)
 
     @property
     def mask_array(self) -> np.ndarray:

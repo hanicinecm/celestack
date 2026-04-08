@@ -105,8 +105,23 @@ def test_plot_mask_has_no_image_trace() -> None:
     assert not any(isinstance(t, go.Image) for t in fig.data)
 
 
+def test_plot_mask_custom_title() -> None:
+    """plot_mask uses the provided title."""
+    mask = np.zeros((8, 10), dtype=np.bool_)
+    fig = plot_mask(mask, title="My Mask")
+    assert "My Mask" in str(fig.layout.title.text)
+
+
+def test_plot_mask_downscale_factor_scales_axes() -> None:
+    """plot_mask scales axes to full-resolution dimensions."""
+    mask = np.zeros((6, 8), dtype=np.bool_)
+    fig = plot_mask(mask, downscale_factor=4)
+    assert fig.layout.xaxis.range[1] == 32
+    assert fig.layout.yaxis.range[0] == 24
+
+
 # ---------------------------------------------------------------------------
-# MaskBuilder.plot_clusters / MaskBuilder.plot_mask
+# MaskBuilder.plot_clusters
 # ---------------------------------------------------------------------------
 
 
@@ -120,16 +135,3 @@ def test_mb_plot_clusters_before_clustering_raises(rgb_frame: Frame) -> None:
     mb = MaskBuilder(rgb_frame)
     with pytest.raises(MaskError, match="compute_clusters"):
         mb.plot_clusters()
-
-
-def test_mb_plot_mask_returns_figure(builder: MaskBuilder) -> None:
-    """MaskBuilder.plot_mask returns a Figure after mask creation."""
-    builder.apply_labels({0})
-    assert isinstance(builder.plot_mask(), go.Figure)
-
-
-def test_mb_plot_mask_before_mask_raises(rgb_frame: Frame) -> None:
-    """MaskBuilder.plot_mask raises MaskError before mask creation."""
-    mb = MaskBuilder(rgb_frame)
-    with pytest.raises(MaskError, match="mask must exist"):
-        mb.plot_mask()

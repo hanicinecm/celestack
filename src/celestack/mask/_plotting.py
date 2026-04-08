@@ -94,32 +94,42 @@ def plot_clusters(labels: np.ndarray) -> go.Figure:
     return fig
 
 
-def plot_mask(mask: np.ndarray) -> go.Figure:
-    """Visualize a boolean mask as a black-and-white image.
+def plot_mask(
+    array: np.ndarray,
+    *,
+    title: str = "<Mask>",
+    downscale_factor: int = 1,
+) -> go.Figure:
+    """Visualize a boolean mask as a binary image with Plotly.
 
-    Foreground pixels are white; background pixels are black.
+    The mask is displayed as a black-and-white image, where foreground pixels
+    are white and background pixels are black.  The axes are scaled to match the
+    full-resolution dimensions based on the provided downscale factor, but pixel
+    hover data is disabled for performance.
 
     Args:
-        mask: Boolean mask array with shape (H, W).
-
-    Returns:
-        Plotly figure with a static PNG mask image.
+        array: 2D boolean array with shape (H, W) representing the mask.
+        title: Title for the plot. Optional.
+        downscale_factor: Ratio between full-resolution and proxy dimensions. Optional.
     """
-    height, width = mask.shape
+    full_h = array.shape[0] * downscale_factor
+    full_w = array.shape[1] * downscale_factor
 
     fig = go.Figure()
     fig.add_layout_image(
         dict(
-            source=as_png_data_uri(mask),
+            source=as_png_data_uri(array),
             xref="x",
             yref="y",
             x=0,
             y=0,
-            sizex=width,
-            sizey=height,
+            sizex=full_w,
+            sizey=full_h,
             sizing="stretch",
             layer="below",
         )
     )
-    fig.update_layout(_base_layout(height, width, "Mask Preview"))
+    layout = _base_layout(full_h, full_w, title)
+    fig.update_layout(layout)
+
     return fig

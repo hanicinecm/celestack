@@ -32,18 +32,18 @@ def as_png_data_uri(array: np.ndarray) -> str:
 def plot_frame(
     array: np.ndarray,
     *,
-    title: str,
     bit_depth: int,
     downscale_factor: int,
+    title: str = "<Frame>",
     show_pixels: bool = False,
 ) -> go.Figure:
     """Create a Plotly figure for frame visualization.
 
     Args:
         array: Image pixel data.
-        title: Figure title (typically the filename).
         bit_depth: Source bit depth for correct value scaling.
         downscale_factor: Ratio between full-res and proxy dimensions.
+        title: Figure title (typically the filename).
         show_pixels: Whether to plot with pixel hover data.
 
     Returns:
