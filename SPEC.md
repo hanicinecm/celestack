@@ -117,7 +117,7 @@ For the **external mask** path, the project caller loads the user-supplied file 
 
 **`apply_labels(foreground_clusters)`**: Designates which cluster indices are foreground. Builds the proxy-resolution boolean mask from cluster assignments.
 
-**Plotting**: `plot_clusters()` returns a Plotly figure with a static color-coded PNG of the proxy cluster map and a non-interactive legend showing cluster indices. `plot_mask()` returns a static black-and-white PNG of the proxy mask. Neither method embeds per-pixel Plotly traces — all pixel data is serialized as a PNG data URI for rendering speed.
+**Plotting**: `plot_clusters()` returns a Plotly figure with a static color-coded PNG of the proxy cluster map and a non-interactive legend showing cluster indices. Does not embed per-pixel Plotly traces — all pixel data is serialized as a PNG data URI for rendering speed.
 
 **`build()`**: Re-runs feature extraction and K-Means at full resolution using the same weights, cluster count, and centroid-based label ordering as the proxy session. Returns a detached in-memory full-resolution `Mask`. The project then saves it to `frames/full_res/mask.tiff` and writes the proxy to `frames/proxy/mask.tiff`.
 
