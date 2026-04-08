@@ -66,10 +66,7 @@ def gray_mask(gray_mask_path: Path) -> Mask:
 
 @pytest.fixture()
 def builder(rgb_frame: Frame) -> MaskBuilder:
-    """MaskBuilder with clusters computed (K=2) on a 2x downscaled proxy.
-
-    The source frame is 32x24, so the proxy is 16x12.
-    """
-    mb = MaskBuilder(rgb_frame, proxy_downscale_factor=2)
+    """MaskBuilder with clusters computed (K=2)."""
+    mb = MaskBuilder(rgb_frame)
     mb.compute_clusters(2)
     return mb

@@ -107,21 +107,17 @@ Builds a foreground mask algorithmically from an RGB source image via K-Means cl
 
 For the **external mask** path, the project caller loads the user-supplied file directly as `Mask(path)` — no `MaskBuilder` is involved.
 
-**Proxy-based workflow**: On construction, `MaskBuilder` creates an internal downscaled RGB proxy of the source image (`proxy_downscale_factor`, `proxy_bit_depth` parameters). All clustering and plotting operates on this proxy for speed. The final `build()` call re-runs clustering on the full-resolution image using the same parameters.
+**Full-resolution workflow**: All clustering operates on the full-resolution pixel data. Clustering results are not invariant to bit depth and scaling changes, so downscaled proxies cannot be used for trial clustering. The constructor takes only the source RGB `Frame` and immediately extracts a standardized feature matrix (R, G, B standardized to zero mean / unit variance; X, Y normalized to [-1, 1]). This matrix is computed once and reused across all subsequent `compute_clusters` calls.
 
-**`ClusterWeights` dataclass**: Controls which feature dimensions are included in clustering and how strongly each is weighted. Fields: `r`, `g`, `b` (RGB channel weights, default `1.0`) and `x`, `y` (normalized spatial coordinate weights, default `0.0`). Setting a weight to `0` excludes that feature dimension from the feature matrix entirely. Default weights use RGB only (no spatial). Exported publicly from `celestack.mask`.
+**`ClusterWeights` dataclass**: Controls which feature dimensions are included in clustering and how strongly each is weighted. Fields: `r`, `g`, `b` (RGB channel weights, default `1.0`) and `x`, `y` (normalized spatial coordinate weights, default `0.0`). Setting a weight to `0` excludes that feature dimension from the feature matrix entirely. Weights are applied to the pre-standardized features, so they act as a clean relative importance knob. Default weights use RGB only (no spatial). Exported publicly from `celestack.mask`.
 
-**Stable cluster ordering**: After K-Means, cluster labels are remapped so that cluster IDs are assigned in ascending order of mean (R, G, B) centroid — making the ordering deterministic and independent of K-Means initialization. This ensures the same label indices refer to the same semantic clusters whether clustering is run on the proxy or the full-resolution image.
+**`compute_clusters(n_clusters, weights=ClusterWeights())`**: Applies weights to the stored standardized features, drops zero-weighted columns, and runs K-Means. Can be called repeatedly with different K or weights without recomputing the base features.
 
-**`compute_clusters(n_clusters, weights=ClusterWeights())`**: Runs K-Means on the proxy. The feature matrix is recomputed only when `weights` changes; re-calling with the same weights and a different K reuses the cached features.
+**Plotting**: `plot_clusters()` returns a Plotly figure with a static color-coded PNG of the cluster map and a non-interactive legend showing cluster indices. Large label arrays are downscaled via nearest-neighbor before PNG encoding (target long edge ~2560 px) to keep rendering fast; axes always reflect full-resolution dimensions. Does not embed per-pixel Plotly traces — all pixel data is serialized as a PNG data URI.
 
-**`apply_labels(foreground_clusters)`**: Designates which cluster indices are foreground. Builds the proxy-resolution boolean mask from cluster assignments.
+**`build(foreground_clusters)`**: Builds the boolean mask from the current cluster labels. Takes a set of cluster indices to mark as foreground. Returns a detached in-memory full-resolution `Mask`.
 
-**Plotting**: `plot_clusters()` returns a Plotly figure with a static color-coded PNG of the proxy cluster map and a non-interactive legend showing cluster indices. Does not embed per-pixel Plotly traces — all pixel data is serialized as a PNG data URI for rendering speed.
-
-**`build()`**: Re-runs feature extraction and K-Means at full resolution using the same weights, cluster count, and centroid-based label ordering as the proxy session. Returns a detached in-memory full-resolution `Mask`. The project then saves it to `frames/full_res/mask.tiff` and writes the proxy to `frames/proxy/mask.tiff`.
-
-The algorithmic path requires interactive user input (cluster labeling). To preserve the principle that API methods are the single source of truth for both CLI and GUI, mask building is decomposed into multiple atomic, non-interactive methods on Project (e.g. compute clusters, apply labels). Each method takes concrete inputs and produces concrete outputs. The interactive loop — presenting results and collecting user choices — lives entirely in the CLI/GUI layer, which orchestrates these atomic methods. Manual mask refinement (rectangle/pixel edits) is done on the `Mask` instance after `build()`.
+The algorithmic path requires interactive user input (choosing cluster count and foreground labels). To preserve the principle that API methods are the single source of truth for both CLI and GUI, mask building is decomposed into multiple atomic, non-interactive methods on Project (e.g. compute clusters, build mask). Each method takes concrete inputs and produces concrete outputs. The interactive loop — presenting results and collecting user choices — lives entirely in the CLI/GUI layer, which orchestrates these atomic methods. Manual mask refinement (rectangle/pixel edits) is done on the `Mask` instance after `build()`.
 
 ### StarCatalog
 
