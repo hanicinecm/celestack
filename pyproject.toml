@@ -23,6 +23,12 @@ dependencies = [
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[tool.pytest.ini_options]
+filterwarnings = [
+    "error",
+    "ignore:Number of distinct clusters .* found smaller than n_clusters:sklearn.exceptions.ConvergenceWarning",
+]
+
 [dependency-groups]
 dev = [
     "ipython>=9.12.0",
