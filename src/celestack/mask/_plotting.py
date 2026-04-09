@@ -6,6 +6,7 @@ import colorsys
 
 import numpy as np
 import plotly.graph_objects as go
+from scipy import ndimage
 
 from celestack.frame._plotting import as_png_data_uri
 
@@ -122,11 +123,92 @@ def plot_clusters(labels: np.ndarray) -> go.Figure:
     return fig
 
 
+DEFAULT_HIGHLIGHT_NOISE_MAX_SIZE = 128
+"""Default maximum component area (in pixels) for noise highlighting."""
+
+_FG_NOISE_COLOR = "rgb(255, 80, 80)"
+"""Red for foreground noise particles."""
+
+_BG_NOISE_COLOR = "rgb(80, 130, 255)"
+"""Blue for background noise particles (holes)."""
+
+_MIN_MARKER_SIZE = 4
+"""Minimum Scatter marker size for the smallest noise particles."""
+
+_MAX_MARKER_SIZE = 18
+"""Maximum Scatter marker size for the largest noise particles."""
+
+
+def _find_noise_particles(
+    array: np.ndarray,
+    max_size: int,
+) -> tuple[list[float], list[float], list[int], list[float], list[float], list[int]]:
+    """Locate small connected components and compute their centroids and sizes.
+
+    Args:
+        array: 2D boolean mask array.
+        max_size: Maximum component area (in pixels) to consider noise.
+
+    Returns:
+        Tuple of ``(fg_x, fg_y, fg_sizes, bg_x, bg_y, bg_sizes)`` where
+        each list contains the centroid coordinates and pixel areas of
+        the small foreground / background components respectively.
+    """
+    fg_x: list[float] = []
+    fg_y: list[float] = []
+    fg_sizes: list[int] = []
+    bg_x: list[float] = []
+    bg_y: list[float] = []
+    bg_sizes: list[int] = []
+
+    # Foreground noise particles
+    fg_labels, fg_count = ndimage.label(array)
+    if fg_count > 0:
+        sizes = np.bincount(fg_labels.ravel())
+        for label_id in range(1, fg_count + 1):
+            if sizes[label_id] <= max_size:
+                ys, xs = np.where(fg_labels == label_id)
+                fg_x.append(float(xs.mean()))
+                fg_y.append(float(ys.mean()))
+                fg_sizes.append(int(sizes[label_id]))
+
+    # Background noise particles (holes)
+    bg_labels, bg_count = ndimage.label(~array)
+    if bg_count > 0:
+        sizes = np.bincount(bg_labels.ravel())
+        for label_id in range(1, bg_count + 1):
+            if sizes[label_id] <= max_size:
+                ys, xs = np.where(bg_labels == label_id)
+                bg_x.append(float(xs.mean()))
+                bg_y.append(float(ys.mean()))
+                bg_sizes.append(int(sizes[label_id]))
+
+    return fg_x, fg_y, fg_sizes, bg_x, bg_y, bg_sizes
+
+
+def _particle_marker_sizes(sizes: list[int], max_size: int) -> list[float]:
+    """Map particle pixel areas to Scatter marker sizes.
+
+    Linearly interpolates between ``_MIN_MARKER_SIZE`` and
+    ``_MAX_MARKER_SIZE`` based on particle area relative to *max_size*.
+
+    Args:
+        sizes: Pixel areas of each particle.
+        max_size: Maximum particle area (used as the upper bound for scaling).
+
+    Returns:
+        List of marker sizes, one per particle.
+    """
+    span = _MAX_MARKER_SIZE - _MIN_MARKER_SIZE
+    return [_MIN_MARKER_SIZE + span * (s / max_size) for s in sizes]
+
+
 def plot_mask(
     array: np.ndarray,
     *,
     title: str = "<Mask>",
     downscale_factor: int = 1,
+    highlight_noise: int | None = None,
 ) -> go.Figure:
     """Visualize a boolean mask as a binary image with Plotly.
 
@@ -135,10 +217,17 @@ def plot_mask(
     full-resolution dimensions based on the provided downscale factor, but pixel
     hover data is disabled for performance.
 
+    When *highlight_noise* is set, Scatter traces are added to mark
+    small connected components: foreground noise in red and background
+    noise (holes) in blue.  Marker size is proportional to particle area.
+    The traces can be toggled via the legend.
+
     Args:
         array: 2D boolean array with shape (H, W) representing the mask.
-        title: Title for the plot. Optional.
-        downscale_factor: Ratio between full-resolution and proxy dimensions. Optional.
+        title: Title for the plot.
+        downscale_factor: Ratio between full-resolution and proxy dimensions.
+        highlight_noise: Maximum component area (in pixels) to highlight.
+            ``None`` (default) disables highlighting.
     """
     full_h = array.shape[0] * downscale_factor
     full_w = array.shape[1] * downscale_factor
@@ -157,6 +246,49 @@ def plot_mask(
             layer="below",
         )
     )
+
+    if highlight_noise is not None:
+        fg_x, fg_y, fg_sizes, bg_x, bg_y, bg_sizes = _find_noise_particles(
+            array, highlight_noise
+        )
+        scale = downscale_factor
+
+        if fg_x:
+            fig.add_trace(
+                go.Scatter(
+                    x=[v * scale for v in fg_x],
+                    y=[v * scale for v in fg_y],
+                    mode="markers",
+                    marker=dict(
+                        color=_FG_NOISE_COLOR,
+                        size=_particle_marker_sizes(fg_sizes, highlight_noise),
+                        symbol="circle",
+                    ),
+                    name="FG noise",
+                    showlegend=True,
+                    hovertext=[f"area={s}" for s in fg_sizes],
+                    hoverinfo="text",
+                )
+            )
+
+        if bg_x:
+            fig.add_trace(
+                go.Scatter(
+                    x=[v * scale for v in bg_x],
+                    y=[v * scale for v in bg_y],
+                    mode="markers",
+                    marker=dict(
+                        color=_BG_NOISE_COLOR,
+                        size=_particle_marker_sizes(bg_sizes, highlight_noise),
+                        symbol="circle",
+                    ),
+                    name="BG noise",
+                    showlegend=True,
+                    hovertext=[f"area={s}" for s in bg_sizes],
+                    hoverinfo="text",
+                )
+            )
+
     layout = _base_layout(full_h, full_w, title)
     fig.update_layout(layout)
 

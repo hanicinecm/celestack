@@ -17,6 +17,7 @@ dependencies = [
     "tifffile>=2026.3.3",
     "rich>=14.0.0",
     "scikit-learn>=1.8.0",
+    "scipy>=1.15.0",
 ]
 
 [build-system]

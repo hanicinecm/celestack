@@ -56,6 +56,7 @@ dependencies = [
     { name = "polars" },
     { name = "rich" },
     { name = "scikit-learn" },
+    { name = "scipy" },
     { name = "tifffile" },
 ]
 
@@ -77,6 +78,7 @@ requires-dist = [
     { name = "polars", specifier = ">=1.39.3" },
     { name = "rich", specifier = ">=14.0.0" },
     { name = "scikit-learn", specifier = ">=1.8.0" },
+    { name = "scipy", specifier = ">=1.15.0" },
     { name = "tifffile", specifier = ">=2026.3.3" },
 ]
 

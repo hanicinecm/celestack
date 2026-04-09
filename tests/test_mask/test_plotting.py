@@ -121,6 +121,74 @@ def test_plot_mask_downscale_factor_scales_axes() -> None:
 
 
 # ---------------------------------------------------------------------------
+# plot_mask — highlight_noise
+# ---------------------------------------------------------------------------
+
+
+def test_plot_mask_highlight_noise_adds_fg_trace() -> None:
+    """highlight_noise adds a Scatter trace for foreground noise."""
+    mask = np.zeros((20, 20), dtype=np.bool_)
+    mask[5, 5] = True  # single-pixel foreground particle
+    fig = plot_mask(mask, highlight_noise=1)
+    names = {t.name for t in fig.data}
+    assert "FG noise" in names
+
+
+def test_plot_mask_highlight_noise_adds_bg_trace() -> None:
+    """highlight_noise adds a Scatter trace for background noise."""
+    mask = np.ones((20, 20), dtype=np.bool_)
+    mask[5, 5] = False  # single-pixel background hole
+    fig = plot_mask(mask, highlight_noise=1)
+    names = {t.name for t in fig.data}
+    assert "BG noise" in names
+
+
+def test_plot_mask_highlight_noise_default_no_traces() -> None:
+    """Default (None) produces no Scatter traces."""
+    mask = np.zeros((20, 20), dtype=np.bool_)
+    mask[5, 5] = True
+    fig = plot_mask(mask)
+    assert len(fig.data) == 0
+
+
+def test_plot_mask_highlight_noise_no_particles_no_traces() -> None:
+    """When no small particles exist, no traces are added."""
+    mask = np.ones((20, 20), dtype=np.bool_)
+    fig = plot_mask(mask, highlight_noise=1)
+    assert len(fig.data) == 0
+
+
+def test_plot_mask_highlight_noise_marker_sizes_proportional() -> None:
+    """Larger particles get larger markers."""
+    mask = np.zeros((30, 30), dtype=np.bool_)
+    mask[5, 5] = True  # 1-pixel particle
+    mask[15, 15:18] = True  # 3-pixel particle
+    fig = plot_mask(mask, highlight_noise=5)
+    trace = next(t for t in fig.data if t.name == "FG noise")
+    sizes = trace.marker.size
+    # The 3-pixel particle should have a larger marker than the 1-pixel one
+    assert max(sizes) > min(sizes)
+
+
+def test_plot_mask_highlight_noise_only_one_layout_image() -> None:
+    """highlight_noise does not add a second layout image."""
+    mask = np.zeros((20, 20), dtype=np.bool_)
+    mask[5, 5] = True
+    fig = plot_mask(mask, highlight_noise=1)
+    assert len(fig.layout.images) == 1
+
+
+def test_plot_mask_highlight_noise_scales_coordinates() -> None:
+    """Scatter coordinates account for downscale_factor."""
+    mask = np.zeros((20, 20), dtype=np.bool_)
+    mask[10, 10] = True  # centroid at (10, 10) in proxy space
+    fig = plot_mask(mask, downscale_factor=4, highlight_noise=1)
+    trace = next(t for t in fig.data if t.name == "FG noise")
+    assert trace.x[0] == pytest.approx(40.0)
+    assert trace.y[0] == pytest.approx(40.0)
+
+
+# ---------------------------------------------------------------------------
 # MaskBuilder.plot_clusters
 # ---------------------------------------------------------------------------
 

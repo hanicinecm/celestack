@@ -572,10 +572,10 @@ def test_plot_has_layout_image() -> None:
     assert len(fig.layout.images) > 0
 
 
-def test_plot_has_no_traces() -> None:
-    """plot() adds no data traces."""
+def test_plot_has_no_traces_when_highlight_disabled() -> None:
+    """plot(highlight_noise=0) adds no data traces."""
     mask = Mask._from_array(np.zeros((8, 10), dtype=np.bool_))
-    fig = mask.plot()
+    fig = mask.plot(highlight_noise=0)
     assert len(fig.data) == 0
 
 
@@ -607,3 +607,104 @@ def test_plot_title_detached() -> None:
     mask = Mask._from_array(np.zeros((4, 4), dtype=np.bool_))
     fig = mask.plot()
     assert "<detached>" in str(fig.layout.title.text)
+
+
+# ---------------------------------------------------------------------------
+# remove_noise
+# ---------------------------------------------------------------------------
+
+
+def test_remove_noise_cleans_single_pixel_noise() -> None:
+    """remove_noise removes single-pixel foreground and background noise."""
+    arr = np.zeros((20, 20), dtype=bool)
+    arr[0:10, :] = True  # large foreground block
+    arr[15, 15] = True  # single FG particle
+    arr[5, 5] = False  # single BG hole
+    mask = Mask._from_array(arr)
+    mask.remove_noise(max_size=1)
+    assert not mask.array[15, 15]
+    assert mask.array[5, 5]
+    assert mask.array[0:10, :].sum() == 200  # block preserved
+
+
+def test_remove_noise_preserves_large_regions() -> None:
+    """remove_noise does not touch regions larger than max_size."""
+    arr = np.zeros((20, 20), dtype=bool)
+    arr[0:5, 0:5] = True  # 25-pixel block
+    mask = Mask._from_array(arr)
+    mask.remove_noise(max_size=10)
+    assert mask.array[0:5, 0:5].all()
+
+
+def test_remove_noise_detaches(gray_mask_path: Path) -> None:
+    """remove_noise detaches the mask from its backing path."""
+    mask = Mask(gray_mask_path)
+    assert mask._path is not None
+    mask.remove_noise(max_size=1)
+    with pytest.raises(AttributeError, match="not backed by a file"):
+        _ = mask.path
+
+
+def test_remove_noise_invalid_max_size_raises() -> None:
+    """remove_noise raises ValueError for max_size < 1."""
+    mask = Mask._from_array(np.zeros((4, 4), dtype=np.bool_))
+    with pytest.raises(ValueError, match="max_size must be >= 1"):
+        mask.remove_noise(max_size=0)
+
+
+def test_remove_noise_default_max_size() -> None:
+    """remove_noise defaults to DEFAULT_NOISE_MAX_SIZE (8)."""
+    arr = np.zeros((20, 20), dtype=bool)
+    arr[0, 0:8] = True  # 8 pixels — exactly at default threshold
+    mask = Mask._from_array(arr)
+    mask.remove_noise()
+    assert not mask.array.any()
+
+
+# ---------------------------------------------------------------------------
+# plot with highlight_noise
+# ---------------------------------------------------------------------------
+
+
+def test_plot_highlight_noise_adds_traces() -> None:
+    """plot(highlight_noise=N) adds Scatter traces for noise particles."""
+    arr = np.zeros((20, 20), dtype=bool)
+    arr[5, 5] = True  # single-pixel FG particle
+    mask = Mask._from_array(arr)
+    fig = mask.plot(highlight_noise=1)
+    assert len(fig.data) > 0
+    assert any(t.name == "FG noise" for t in fig.data)
+
+
+def test_plot_highlight_noise_default_enables() -> None:
+    """Default plot() highlights noise using the default max size."""
+    arr = np.zeros((20, 20), dtype=bool)
+    arr[5, 5] = True  # single-pixel particle, within default threshold
+    mask = Mask._from_array(arr)
+    fig = mask.plot()
+    assert any(t.name == "FG noise" for t in fig.data)
+
+
+def test_plot_highlight_noise_zero_disables() -> None:
+    """plot(highlight_noise=0) disables highlighting."""
+    arr = np.zeros((20, 20), dtype=bool)
+    arr[5, 5] = True
+    mask = Mask._from_array(arr)
+    fig = mask.plot(highlight_noise=0)
+    assert len(fig.data) == 0
+
+
+def test_plot_highlight_noise_no_particles_found() -> None:
+    """When no noise exists, highlight_noise still works with no traces."""
+    arr = np.ones((20, 20), dtype=bool)
+    mask = Mask._from_array(arr)
+    fig = mask.plot(highlight_noise=1)
+    assert len(fig.data) == 0
+
+
+def test_plot_highlight_noise_conserves_cache(gray_mask_path: Path) -> None:
+    """plot(highlight_noise=...) does not leave the array loaded."""
+    mask = Mask(gray_mask_path)
+    assert mask._array_cache is None
+    mask.plot(highlight_noise=5)
+    assert mask._array_cache is None

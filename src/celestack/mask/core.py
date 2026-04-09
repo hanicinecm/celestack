@@ -14,7 +14,8 @@ from celestack.exceptions import DownscaleError
 from celestack.frame._backends import EmptyBackend, get_backends, is_tiff_path
 from celestack.frame._constants import CELESTACK_KEY
 from celestack.frame._image_ops import downscale_by_block_average, to_grayscale
-from celestack.mask._plotting import plot_mask
+from celestack.mask._morphology import DEFAULT_NOISE_MAX_SIZE, remove_small_components
+from celestack.mask._plotting import DEFAULT_HIGHLIGHT_NOISE_MAX_SIZE, plot_mask
 
 
 class Mask:
@@ -309,21 +310,60 @@ class Mask:
         self.array[pixels[:, 1], pixels[:, 0]] = foreground
         self._detach()
 
-    def plot(self) -> go.Figure:
+    def remove_noise(self, max_size: int | None = None) -> None:
+        """Remove small connected components from the mask.
+
+        Foreground particles with area <= *max_size* are cleared to
+        background, and background particles with area <= *max_size*
+        are filled to foreground.  Uses 4-connectivity.
+
+        The mask is detached from its backing path after mutation.
+
+        Args:
+            max_size: Maximum particle area in pixels to remove.  Defaults
+                to :data:`~celestack.mask._morphology.DEFAULT_NOISE_MAX_SIZE`.
+
+        Raises:
+            ValueError: If *max_size* is less than 1.
+        """
+        if max_size is None:
+            max_size = DEFAULT_NOISE_MAX_SIZE
+        if max_size < 1:
+            msg = "max_size must be >= 1"
+            raise ValueError(msg)
+        cleaned = remove_small_components(self.array, max_size)
+        self.array[:] = cleaned
+        self._detach()
+
+    def plot(self, *, highlight_noise: int | None = None) -> go.Figure:
         """Visualize the mask as a black-and-white Plotly figure.
 
         Axes are in full-resolution pixel coordinates, accounting for
         ``downscale_factor``. The array cache is conserved: if the pixel
         data was not loaded before the call, it is unloaded afterwards.
 
+        When *highlight_noise* is non-zero, small connected components
+        are shown as Scatter markers: foreground noise in red and
+        background noise (holes) in blue.  Marker size is proportional
+        to particle area.  The traces can be toggled via the legend.
+
+        Args:
+            highlight_noise: Maximum component area (in pixels) to
+                highlight.  ``None`` (default) uses
+                :data:`~celestack.mask._plotting.DEFAULT_HIGHLIGHT_NOISE_MAX_SIZE`.
+                Pass ``0`` to disable highlighting.
+
         Returns:
             A Plotly figure with the mask rendered as a static PNG image.
         """
+        if highlight_noise is None:
+            highlight_noise = DEFAULT_HIGHLIGHT_NOISE_MAX_SIZE
         with self._conserve_cache():
             figure = plot_mask(
                 self.array,
                 title=self._path.name if self._path is not None else "<detached>",
                 downscale_factor=self._downscale_factor,
+                highlight_noise=highlight_noise if highlight_noise > 0 else None,
             )
         return figure
 
