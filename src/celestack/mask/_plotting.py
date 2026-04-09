@@ -10,6 +10,7 @@ import plotly.graph_objects as go
 from scipy import ndimage
 
 from celestack.frame._plotting import as_png_data_uri
+from celestack.mask._morphology import _small_component_metadata
 
 DEFAULT_HIGHLIGHT_NOISE_MAX_SIZE = 128
 """Default maximum component area (in pixels) for noise highlighting."""
@@ -162,30 +163,34 @@ def _find_noise_particles(
     bg_sizes: list[int] = []
 
     # Foreground noise particles
-    fg_labeled = cast(tuple[np.ndarray, int], ndimage.label(array))
-    fg_labels = np.asarray(fg_labeled[0], dtype=np.intp)
-    fg_count = int(fg_labeled[1])
-    if fg_count > 0:
-        sizes = np.bincount(fg_labels.ravel())
-        for label_id in range(1, fg_count + 1):
-            if sizes[label_id] <= max_size:
-                ys, xs = np.where(fg_labels == label_id)
-                fg_x.append(float(xs.mean()))
-                fg_y.append(float(ys.mean()))
-                fg_sizes.append(int(sizes[label_id]))
+    fg_labels, fg_all_sizes, fg_small = _small_component_metadata(array, max_size)
+    fg_ids = np.flatnonzero(fg_small).astype(np.intp, copy=False)
+    if fg_ids.size > 0:
+        fg_centroids_raw = ndimage.center_of_mass(
+            np.ones_like(array, dtype=np.uint8),
+            labels=fg_labels,
+            index=fg_ids.tolist(),
+        )
+        fg_centroids = cast(list[tuple[float, float]], fg_centroids_raw)
+        for (y, x), size in zip(fg_centroids, fg_all_sizes[fg_ids], strict=True):
+            fg_x.append(float(x))
+            fg_y.append(float(y))
+            fg_sizes.append(int(size))
 
     # Background noise particles (holes)
-    bg_labeled = cast(tuple[np.ndarray, int], ndimage.label(~array))
-    bg_labels = np.asarray(bg_labeled[0], dtype=np.intp)
-    bg_count = int(bg_labeled[1])
-    if bg_count > 0:
-        sizes = np.bincount(bg_labels.ravel())
-        for label_id in range(1, bg_count + 1):
-            if sizes[label_id] <= max_size:
-                ys, xs = np.where(bg_labels == label_id)
-                bg_x.append(float(xs.mean()))
-                bg_y.append(float(ys.mean()))
-                bg_sizes.append(int(sizes[label_id]))
+    bg_labels, bg_all_sizes, bg_small = _small_component_metadata(~array, max_size)
+    bg_ids = np.flatnonzero(bg_small).astype(np.intp, copy=False)
+    if bg_ids.size > 0:
+        bg_centroids_raw = ndimage.center_of_mass(
+            np.ones_like(array, dtype=np.uint8),
+            labels=bg_labels,
+            index=bg_ids.tolist(),
+        )
+        bg_centroids = cast(list[tuple[float, float]], bg_centroids_raw)
+        for (y, x), size in zip(bg_centroids, bg_all_sizes[bg_ids], strict=True):
+            bg_x.append(float(x))
+            bg_y.append(float(y))
+            bg_sizes.append(int(size))
 
     return fg_x, fg_y, fg_sizes, bg_x, bg_y, bg_sizes
 
