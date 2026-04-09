@@ -310,7 +310,7 @@ class Mask:
         self.array[pixels[:, 1], pixels[:, 0]] = foreground
         self._detach()
 
-    def remove_noise(self, max_size: int | None = None) -> None:
+    def remove_noise(self, max_size: int = DEFAULT_NOISE_MAX_SIZE) -> None:
         """Remove small connected components from the mask.
 
         Foreground particles with area <= *max_size* are cleared to
@@ -326,16 +326,15 @@ class Mask:
         Raises:
             ValueError: If *max_size* is less than 1.
         """
-        if max_size is None:
-            max_size = DEFAULT_NOISE_MAX_SIZE
-        if max_size < 1:
-            msg = "max_size must be >= 1"
-            raise ValueError(msg)
         cleaned = remove_small_components(self.array, max_size)
         self.array[:] = cleaned
         self._detach()
 
-    def plot(self, *, highlight_noise: int | None = None) -> go.Figure:
+    def plot(
+        self,
+        *,
+        highlight_noise: int = DEFAULT_HIGHLIGHT_NOISE_MAX_SIZE,
+    ) -> go.Figure:
         """Visualize the mask as a black-and-white Plotly figure.
 
         Axes are in full-resolution pixel coordinates, accounting for
@@ -345,25 +344,24 @@ class Mask:
         When *highlight_noise* is non-zero, small connected components
         are shown as Scatter markers: foreground noise in red and
         background noise (holes) in blue.  Marker size is proportional
-        to particle area.  The traces can be toggled via the legend.
+        to particle area.
 
         Args:
             highlight_noise: Maximum component area (in pixels) to
-                highlight.  ``None`` (default) uses
+                highlight.
+                Defaults to
                 :data:`~celestack.mask._plotting.DEFAULT_HIGHLIGHT_NOISE_MAX_SIZE`.
                 Pass ``0`` to disable highlighting.
 
         Returns:
             A Plotly figure with the mask rendered as a static PNG image.
         """
-        if highlight_noise is None:
-            highlight_noise = DEFAULT_HIGHLIGHT_NOISE_MAX_SIZE
         with self._conserve_cache():
             figure = plot_mask(
                 self.array,
                 title=self._path.name if self._path is not None else "<detached>",
                 downscale_factor=self._downscale_factor,
-                highlight_noise=highlight_noise if highlight_noise > 0 else None,
+                highlight_noise=highlight_noise,
             )
         return figure
 

@@ -23,6 +23,10 @@ def remove_small_components(mask: np.ndarray, max_size: int) -> np.ndarray:
     Returns:
         Cleaned boolean array (copy of input).
     """
+    if max_size < 1:
+        msg = "max_size must be >= 1"
+        raise ValueError(msg)
+
     result = mask.copy()
 
     # Remove small foreground components

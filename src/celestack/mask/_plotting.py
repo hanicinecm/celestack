@@ -10,8 +10,23 @@ from scipy import ndimage
 
 from celestack.frame._plotting import as_png_data_uri
 
+DEFAULT_HIGHLIGHT_NOISE_MAX_SIZE = 128
+"""Default maximum component area (in pixels) for noise highlighting."""
+
+_FG_NOISE_COLOR = "rgb(0, 0, 255)"
+"""Red for foreground noise particles."""
+
+_BG_NOISE_COLOR = "rgb(255, 0, 0)"
+"""Blue for background noise particles (holes)."""
+
+_MIN_NOISE_MARKER_SIZE = 4
+"""Minimum Scatter marker size for the smallest noise particles."""
+
+_MAX_NOISE_MARKER_SIZE = 18
+"""Maximum Scatter marker size for the largest noise particles."""
+
 _PLOT_TARGET_LONG_EDGE = 2560
-"""Target long-edge resolution for cluster plot PNG encoding."""
+"""Target long-edge size in pixels for downscaling image before plotting."""
 
 
 def _downscale_nearest(array: np.ndarray, target_long_edge: int) -> np.ndarray:
@@ -123,22 +138,6 @@ def plot_clusters(labels: np.ndarray) -> go.Figure:
     return fig
 
 
-DEFAULT_HIGHLIGHT_NOISE_MAX_SIZE = 128
-"""Default maximum component area (in pixels) for noise highlighting."""
-
-_FG_NOISE_COLOR = "rgb(255, 80, 80)"
-"""Red for foreground noise particles."""
-
-_BG_NOISE_COLOR = "rgb(80, 130, 255)"
-"""Blue for background noise particles (holes)."""
-
-_MIN_MARKER_SIZE = 4
-"""Minimum Scatter marker size for the smallest noise particles."""
-
-_MAX_MARKER_SIZE = 18
-"""Maximum Scatter marker size for the largest noise particles."""
-
-
 def _find_noise_particles(
     array: np.ndarray,
     max_size: int,
@@ -199,16 +198,16 @@ def _particle_marker_sizes(sizes: list[int], max_size: int) -> list[float]:
     Returns:
         List of marker sizes, one per particle.
     """
-    span = _MAX_MARKER_SIZE - _MIN_MARKER_SIZE
-    return [_MIN_MARKER_SIZE + span * (s / max_size) for s in sizes]
+    span = _MAX_NOISE_MARKER_SIZE - _MIN_NOISE_MARKER_SIZE
+    return [_MIN_NOISE_MARKER_SIZE + span * (s / max_size) for s in sizes]
 
 
 def plot_mask(
     array: np.ndarray,
     *,
-    title: str = "<Mask>",
-    downscale_factor: int = 1,
-    highlight_noise: int | None = None,
+    title: str,
+    downscale_factor: int,
+    highlight_noise: int,
 ) -> go.Figure:
     """Visualize a boolean mask as a binary image with Plotly.
 
@@ -227,7 +226,7 @@ def plot_mask(
         title: Title for the plot.
         downscale_factor: Ratio between full-resolution and proxy dimensions.
         highlight_noise: Maximum component area (in pixels) to highlight.
-            ``None`` (default) disables highlighting.
+            Use ``0`` to disable highlighting.
     """
     full_h = array.shape[0] * downscale_factor
     full_w = array.shape[1] * downscale_factor
@@ -247,7 +246,7 @@ def plot_mask(
         )
     )
 
-    if highlight_noise is not None:
+    if highlight_noise > 0:
         fg_x, fg_y, fg_sizes, bg_x, bg_y, bg_sizes = _find_noise_particles(
             array, highlight_noise
         )
