@@ -120,19 +120,25 @@ For the **external mask** path, the project caller loads the user-supplied file 
 
 The algorithmic path requires interactive user input (choosing cluster count and foreground labels). To preserve the principle that API methods are the single source of truth for both CLI and GUI, mask building is decomposed into multiple atomic, non-interactive methods on Project (e.g. compute clusters, build mask). Each method takes concrete inputs and produces concrete outputs. The interactive loop — presenting results and collecting user choices — lives entirely in the CLI/GUI layer, which orchestrates these atomic methods. Manual mask refinement (rectangle/pixel edits) is done on the `Mask` instance after `build()`.
 
-### StarCatalog
+### StarDetector
 
-Owns star detection, propagation, and the `stars.parquet` table.
+Detects stars on a single frame. The core type of the `star_detector` sub-package — segments the sky and runs adaptive detection to produce a star table. Stateless and stack-unaware: it operates on one frame at a time and knows nothing about frame ordering or propagation.
 
-- **Reference star detection**: operates on the (optionally dark-subtracted) reference frame proxy (sky region only, masked). Auto-segments the sky into N segments, adapts thresholding per segment to achieve uniform spatial coverage of a target star count.
-- **Star propagation**: propagates detected stars bidirectionally across the stack, ordered by time delta from the reference frame. Uses linear extrapolation from K nearest known positions, with outlier rejection (local linear fit, shape consistency, thresholding bounds).
+- **Detection**: operates on the (optionally dark-subtracted) reference frame proxy (sky region only, masked). Auto-segments the sky into N segments, adapts thresholding per segment to achieve uniform spatial coverage of a target star count.
+- **Output**: a polars DataFrame with columns `(star_id, x, y, brightness, size, roundness, ...)` — one row per detected star, all belonging to a single frame. Internal implementation is split across private sub-modules (segmentation, thresholding/detection).
+
+### StarTracker
+
+Propagates detected stars across the frame stack. The core type of the `star_tracker` sub-package — takes the reference star table produced by `StarDetector` and grows it into a full multi-frame correspondence table persisted as `stars.parquet`.
+
+- **Propagation**: propagates detected stars bidirectionally across the stack, ordered by time delta from the reference frame. Uses linear extrapolation from K nearest known positions, with outlier rejection (local linear fit, shape consistency, thresholding bounds).
 - **Data**: single `stars.parquet` table with columns `(star_id, frame_id, x, y, brightness, size, roundness, ...)`. Reference frame stars are the subset where `frame_id == reference_frame`. Grows as the stars are propagated across the stack.
 
 ### SkyTransform
 
 Fits and evaluates the spatial transformation model.
 
-- **Fitting**: takes the full star correspondence table from StarCatalog and fits a single function `f(x, y, t) → (x_ref, y_ref)`, where `t` is a time-like variable relative to the reference frame. `t` does not need to be real acquisition time — any monotonically increasing proxy is sufficient (e.g. EXIF timestamps converted to epoch seconds, or auto-incremented sequence numbers extracted from filenames). All frames are assumed to be from one continuous session, so the transform varies smoothly with `t`.
+- **Fitting**: takes the full star correspondence table from StarTracker and fits a single function `f(x, y, t) → (x_ref, y_ref)`, where `t` is a time-like variable relative to the reference frame. `t` does not need to be real acquisition time — any monotonically increasing proxy is sufficient (e.g. EXIF timestamps converted to epoch seconds, or auto-incremented sequence numbers extracted from filenames). All frames are assumed to be from one continuous session, so the transform varies smoothly with `t`.
 - **Model**: non-parametric (no assumed analytical form). Model type TBD — this is a key open design decision that will affect fitting strategy, outlier detection, serialization format, and runtime performance.
 - **Outlier detection**: after fitting, flags stars with large residuals. If a large fraction of a frame's stars are outliers, the frame is flagged for exclusion.
 - **Evaluation**: given a pixel `(x, y)` and time `t`, returns `(x_ref, y_ref)`.
