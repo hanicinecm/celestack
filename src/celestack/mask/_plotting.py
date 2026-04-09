@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import colorsys
+from typing import cast
 
 import numpy as np
 import plotly.graph_objects as go
@@ -161,7 +162,9 @@ def _find_noise_particles(
     bg_sizes: list[int] = []
 
     # Foreground noise particles
-    fg_labels, fg_count = ndimage.label(array)
+    fg_labeled = cast(tuple[np.ndarray, int], ndimage.label(array))
+    fg_labels = np.asarray(fg_labeled[0], dtype=np.intp)
+    fg_count = int(fg_labeled[1])
     if fg_count > 0:
         sizes = np.bincount(fg_labels.ravel())
         for label_id in range(1, fg_count + 1):
@@ -172,7 +175,9 @@ def _find_noise_particles(
                 fg_sizes.append(int(sizes[label_id]))
 
     # Background noise particles (holes)
-    bg_labels, bg_count = ndimage.label(~array)
+    bg_labeled = cast(tuple[np.ndarray, int], ndimage.label(~array))
+    bg_labels = np.asarray(bg_labeled[0], dtype=np.intp)
+    bg_count = int(bg_labeled[1])
     if bg_count > 0:
         sizes = np.bincount(bg_labels.ravel())
         for label_id in range(1, bg_count + 1):

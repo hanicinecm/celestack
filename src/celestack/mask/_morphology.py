@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import cast
+
 import numpy as np
 from scipy import ndimage
 
@@ -30,7 +32,9 @@ def remove_small_components(mask: np.ndarray, max_size: int) -> np.ndarray:
     result = mask.copy()
 
     # Remove small foreground components
-    fg_labels, fg_count = ndimage.label(result)
+    fg_labeled = cast(tuple[np.ndarray, int], ndimage.label(result))
+    fg_labels = np.asarray(fg_labeled[0], dtype=np.intp)
+    fg_count = int(fg_labeled[1])
     if fg_count > 0:
         sizes = np.bincount(fg_labels.ravel())
         # sizes[0] is the background label — leave it alone
@@ -39,7 +43,9 @@ def remove_small_components(mask: np.ndarray, max_size: int) -> np.ndarray:
         result[small[fg_labels]] = False
 
     # Remove small background components (holes)
-    bg_labels, bg_count = ndimage.label(~result)
+    bg_labeled = cast(tuple[np.ndarray, int], ndimage.label(~result))
+    bg_labels = np.asarray(bg_labeled[0], dtype=np.intp)
+    bg_count = int(bg_labeled[1])
     if bg_count > 0:
         sizes = np.bincount(bg_labels.ravel())
         small = sizes <= max_size
