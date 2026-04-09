@@ -1,0 +1,177 @@
+"""DAOStarFinder detection with binary-search threshold tuning."""
+
+from __future__ import annotations
+
+import warnings
+
+import numpy as np
+import polars as pl
+from photutils.detection import DAOStarFinder
+from photutils.utils.exceptions import NoDetectionsWarning
+
+from celestack.progress import ProgressBar
+
+
+def binary_search_threshold(
+    image: np.ndarray,
+    mask: np.ndarray,
+    fwhm: float,
+    target_count: int,
+    roundness_range: tuple[float, float],
+    threshold_bounds: tuple[float, float],
+    max_iterations: int = 15,
+) -> tuple[float, pl.DataFrame]:
+    """Binary-search the detection threshold to yield closest to *target_count* stars.
+
+    If the target is unreachable (fewer real stars than requested), returns
+    the lowest-threshold result within bounds.
+
+    Args:
+        image: 2D grayscale array (float64).
+        mask: 2D boolean array (``True`` = ignored by DAOStarFinder).
+        fwhm: FWHM in proxy pixels.
+        target_count: Desired number of stars.
+        roundness_range: (min, max) roundness for DAOStarFinder.
+        threshold_bounds: (low, high) threshold range.
+        max_iterations: Maximum number of binary-search steps.
+
+    Returns:
+        ``(optimal_threshold, stars_df)`` where *stars_df* has columns
+        ``x, y, flux, fwhm, roundness``.
+    """
+    lo, hi = threshold_bounds
+    best_threshold = lo
+    best_df = pl.DataFrame(
+        schema={
+            "x": pl.Float64,
+            "y": pl.Float64,
+            "flux": pl.Float64,
+            "fwhm": pl.Float64,
+            "roundness": pl.Float64,
+        }
+    )
+    best_diff = float("inf")
+
+    for _ in range(max_iterations):
+        mid = (lo + hi) / 2.0
+        finder = DAOStarFinder(
+            threshold=mid,
+            fwhm=fwhm,
+            roundlo=roundness_range[0],
+            roundhi=roundness_range[1],
+        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", NoDetectionsWarning)
+            result = finder(image.astype(np.float64), mask=mask)
+
+        if result is None or len(result) == 0:
+            hi = mid
+            continue
+
+        count = len(result)
+        df = pl.DataFrame(
+            {
+                "x": np.array(result["xcentroid"], dtype=np.float64),
+                "y": np.array(result["ycentroid"], dtype=np.float64),
+                "flux": np.array(result["flux"], dtype=np.float64),
+                "fwhm": np.full(count, fwhm, dtype=np.float64),
+                "roundness": np.array(result["roundness1"], dtype=np.float64),
+            }
+        )
+
+        diff = abs(count - target_count)
+        if diff < best_diff:
+            best_diff = diff
+            best_threshold = mid
+            best_df = df
+
+        if count < target_count:
+            hi = mid
+        elif count > target_count:
+            lo = mid
+        else:
+            break
+
+    return best_threshold, best_df
+
+
+def detect_in_segments(
+    image: np.ndarray,
+    segment_labels: np.ndarray,
+    target_per_segment: dict[int, int],
+    fwhm: float,
+    roundness_range: tuple[float, float],
+    progress_bar: ProgressBar,
+) -> pl.DataFrame:
+    """Run adaptive detection independently in each sky segment.
+
+    For each segment, builds a mask that exposes only that segment's
+    pixels and binary-searches the threshold to match the per-segment
+    target count.
+
+    Args:
+        image: 2D grayscale proxy array.
+        segment_labels: 2D int32 array (sky pixels 0..N-1, foreground -1).
+        target_per_segment: Mapping from segment label to target star count.
+        fwhm: FWHM in proxy pixels.
+        roundness_range: (min, max) roundness bounds.
+        progress_bar: Progress bar to update after each segment.
+
+    Returns:
+        Combined DataFrame with columns
+        ``x, y, flux, fwhm, roundness, threshold, segment_id``.
+        Coordinates are in proxy space.
+    """
+    all_frames: list[pl.DataFrame] = []
+    float_image = image.astype(np.float64)
+
+    for seg_id, target in sorted(target_per_segment.items()):
+        seg_pixels = float_image[segment_labels == seg_id]
+        if seg_pixels.size == 0:
+            progress_bar.update()
+            continue
+
+        med = float(np.median(seg_pixels))
+        mad = float(np.median(np.abs(seg_pixels - med)))
+        bg_std = 1.4826 * mad
+        if bg_std == 0:
+            progress_bar.update()
+            continue
+
+        threshold_min = max(1.0, 2.0 * bg_std)
+        threshold_max = 15.0 * bg_std
+
+        detection_mask = segment_labels != seg_id
+
+        threshold, stars_df = binary_search_threshold(
+            float_image,
+            detection_mask,
+            fwhm,
+            target,
+            roundness_range,
+            (threshold_min, threshold_max),
+        )
+
+        if len(stars_df) > 0:
+            stars_df = stars_df.with_columns(
+                pl.lit(threshold).alias("threshold"),
+                pl.lit(seg_id).alias("segment_id"),
+            )
+            all_frames.append(stars_df)
+
+        progress_bar.update()
+
+    if not all_frames:
+        return pl.DataFrame(
+            schema={
+                "x": pl.Float64,
+                "y": pl.Float64,
+                "flux": pl.Float64,
+                "fwhm": pl.Float64,
+                "roundness": pl.Float64,
+                "threshold": pl.Float64,
+                "segment_id": pl.Int32,
+            }
+        )
+
+    return pl.concat(all_frames)

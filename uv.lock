@@ -48,9 +48,9 @@ name = "celestack"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
-    { name = "astropy" },
     { name = "exifread" },
     { name = "numpy" },
+    { name = "photutils" },
     { name = "pillow" },
     { name = "plotly" },
     { name = "polars" },
@@ -70,9 +70,9 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "astropy", specifier = ">=7.2.0" },
     { name = "exifread", specifier = ">=3.5.1" },
     { name = "numpy", specifier = ">=2.4.4" },
+    { name = "photutils", specifier = ">=2.3.0" },
     { name = "pillow", specifier = ">=12.1.1" },
     { name = "plotly", specifier = ">=6.6.0" },
     { name = "polars", specifier = ">=1.39.3" },
@@ -327,6 +327,23 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/42/92/cc564bf6381ff43ce1f4d06852fc19a2f11d180f23dc32d9588bee2f149d/pexpect-4.9.0.tar.gz", hash = "sha256:ee7d41123f3c9911050ea2c2dac107568dc43b2d3b0c7557a33212c398ead30f", size = 166450, upload-time = "2023-11-25T09:07:26.339Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/9e/c3/059298687310d527a58bb01f3b1965787ee3b40dce76752eda8b44e9a2c5/pexpect-4.9.0-py2.py3-none-any.whl", hash = "sha256:7236d1e080e4936be2dc3e326cec0af72acf9212a7e1d060210e70a47e253523", size = 63772, upload-time = "2023-11-25T06:56:14.81Z" },
+]
+
+[[package]]
+name = "photutils"
+version = "2.3.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "astropy" },
+    { name = "numpy" },
+    { name = "scipy" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/fd/27/e2c7679cbc6f337af81bee5c95fc989033cc4d30e995cd969cd580b154b0/photutils-2.3.0.tar.gz", hash = "sha256:947527f77794469f960d51e6fd7add2fd531b16f2369d4541b1441eb81b3d9f7", size = 762758, upload-time = "2025-09-16T04:15:57.597Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a3/19/40a1c0e25561eb7f1b6e06156bf8e27b3fbb6a7d0ae5b91dd6d542f84e68/photutils-2.3.0-cp313-cp313-macosx_10_13_x86_64.whl", hash = "sha256:2a10daffc45f295d65a3de0b309ac147610021973b19eaef0f5d59767ff8a635", size = 869495, upload-time = "2025-09-16T04:15:46.45Z" },
+    { url = "https://files.pythonhosted.org/packages/93/43/0c7b276fa1611d33766bb7870cc8197065a6ca9fabbd25d6cdb9354a8ca5/photutils-2.3.0-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:49f699cda74c1580d37682c523f87d93c56eea4e058f1546866acb3f7e5ebce3", size = 869660, upload-time = "2025-09-16T04:15:48.132Z" },
+    { url = "https://files.pythonhosted.org/packages/4e/1c/06bff0b397abddc59617cf29c08f9b4467fe4d8f8c2938ff096fe169b0ea/photutils-2.3.0-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:24d2892a22b60f0ff96489a65072710adb1f27ca9387c581597be3555f191291", size = 1723267, upload-time = "2025-09-16T04:15:49.79Z" },
+    { url = "https://files.pythonhosted.org/packages/d2/8a/eacf1f9a2c161522b1b012eef0864b43ed4cbd7cb327e56bd0b55cc4f18d/photutils-2.3.0-cp313-cp313-win_amd64.whl", hash = "sha256:763c7e4ed36e110a8916e9abb04de2420ace6612254f35d0d73dad702f8296b9", size = 870739, upload-time = "2025-09-16T04:15:51.021Z" },
 ]
 
 [[package]]

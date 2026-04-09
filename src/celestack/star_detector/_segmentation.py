@@ -1,0 +1,33 @@
+"""K-Means sky segmentation for adaptive star detection."""
+
+from __future__ import annotations
+
+import numpy as np
+from sklearn.cluster import KMeans
+
+
+def segment_sky(
+    sky_mask: np.ndarray,
+    n_segments: int,
+) -> np.ndarray:
+    """Partition sky pixels into spatial segments via K-Means on coordinates.
+
+    Foreground pixels (where ``sky_mask`` is ``True``) are labeled ``-1``.
+    Sky pixels are assigned cluster labels ``0`` through ``n_segments - 1``.
+
+    Args:
+        sky_mask: 2D boolean array where ``True`` marks foreground.
+        n_segments: Number of spatial segments to create.
+
+    Returns:
+        2D int32 label array with the same shape as *sky_mask*.
+    """
+    sky_rows, sky_cols = np.where(~sky_mask)
+    coords = np.column_stack([sky_rows, sky_cols]).astype(np.float32)
+
+    kmeans = KMeans(n_clusters=n_segments, random_state=42, n_init="auto")
+    cluster_ids = kmeans.fit_predict(coords).astype(np.int32)
+
+    labels = np.full(sky_mask.shape, -1, dtype=np.int32)
+    labels[sky_rows, sky_cols] = cluster_ids
+    return labels

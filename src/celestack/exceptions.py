@@ -15,3 +15,7 @@ class TileReadError(CelestackError):
 
 class MaskError(CelestackError):
     """Raised when a mask operation fails."""
+
+
+class StarDetectorError(CelestackError):
+    """Raised when star detection fails."""
