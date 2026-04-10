@@ -10,27 +10,25 @@ from scipy import ndimage
 def filter_stars(
     stars: pl.DataFrame,
     sky_mask: np.ndarray,
-    downscale_factor: int,
     target_stars: int,
     min_separation: float,
     edge_margin: int,
 ) -> pl.DataFrame:
     """Filter detected stars by edge proximity, mutual separation, and count cap.
 
-    All coordinates in *stars* (``x``, ``y``) must already be in full-res
-    pixels. The filtering pipeline is:
+    All coordinates in *stars* (``x``, ``y``) must be in the same pixel
+    space as *sky_mask*.  The filtering pipeline is:
 
     1. Edge exclusion (frame edges and mask boundary).
     2. Proximity filter (greedy, brightest-first).
     3. Cap to *target_stars* brightest.
 
     Args:
-        stars: DataFrame with ``x``, ``y``, ``flux`` columns in full-res coords.
-        sky_mask: 2D boolean proxy-space mask (``True`` = foreground).
-        downscale_factor: Ratio between full-res and proxy dimensions.
+        stars: DataFrame with ``x``, ``y``, ``flux`` columns.
+        sky_mask: 2D boolean mask (``True`` = foreground).
         target_stars: Maximum number of stars to keep.
-        min_separation: Minimum distance in full-res pixels between stars.
-        edge_margin: Exclusion zone in full-res pixels around frame and mask edges.
+        min_separation: Minimum distance in pixels between stars.
+        edge_margin: Exclusion zone in pixels around frame and mask edges.
 
     Returns:
         Filtered DataFrame, sorted by descending flux.
@@ -38,15 +36,14 @@ def filter_stars(
     if len(stars) == 0:
         return stars
 
-    full_h = sky_mask.shape[0] * downscale_factor
-    full_w = sky_mask.shape[1] * downscale_factor
+    h, w = sky_mask.shape
 
     # --- 1. Edge exclusion ---
     stars = stars.filter(
         (pl.col("x") >= edge_margin)
-        & (pl.col("x") < full_w - edge_margin)
+        & (pl.col("x") < w - edge_margin)
         & (pl.col("y") >= edge_margin)
-        & (pl.col("y") < full_h - edge_margin)
+        & (pl.col("y") < h - edge_margin)
     )
 
     if len(stars) == 0:
@@ -58,8 +55,8 @@ def filter_stars(
     boundary_yx = np.argwhere(boundary)
 
     if boundary_yx.size > 0:
-        boundary_full_y = boundary_yx[:, 0].astype(np.float64) * downscale_factor
-        boundary_full_x = boundary_yx[:, 1].astype(np.float64) * downscale_factor
+        boundary_y = boundary_yx[:, 0].astype(np.float64)
+        boundary_x = boundary_yx[:, 1].astype(np.float64)
 
         star_x = stars["x"].to_numpy()
         star_y = stars["y"].to_numpy()
@@ -67,7 +64,7 @@ def filter_stars(
         keep = np.ones(len(stars), dtype=bool)
         for i in range(len(stars)):
             dists = np.sqrt(
-                (boundary_full_x - star_x[i]) ** 2 + (boundary_full_y - star_y[i]) ** 2
+                (boundary_x - star_x[i]) ** 2 + (boundary_y - star_y[i]) ** 2
             )
             if dists.min() < edge_margin:
                 keep[i] = False

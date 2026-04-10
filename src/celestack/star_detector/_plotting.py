@@ -8,7 +8,6 @@ import polars as pl
 
 from celestack.frame.core import Frame
 
-
 _STAR_COLOR = "rgba(0, 255, 100, 0.7)"
 """Default colour for star markers."""
 
@@ -73,9 +72,11 @@ def plot_stars(
     """Create a Plotly figure with detected stars overlaid on the frame.
 
     Args:
-        frame: Source proxy frame (provides the base image via ``plot()``).
-        stars: DataFrame with ``x``, ``y``, ``flux`` columns (full-res coords).
-        segment_labels: Optional 2D segment label array (proxy space).
+        frame: Source frame (provides the base image via ``plot()``).
+        stars: DataFrame with ``x0``, ``y0``, ``flux`` columns.  ``x0`` and
+            ``y0`` are in full-resolution pixel coordinates, matching the axes
+            of ``frame.plot()``.
+        segment_labels: Optional 2D segment label array (label-image space).
         show_segments: Whether to overlay segment boundary lines.
 
     Returns:
@@ -96,8 +97,8 @@ def plot_stars(
 
     fig.add_trace(
         go.Scatter(
-            x=stars["x"].to_list(),
-            y=stars["y"].to_list(),
+            x=stars["x0"].to_list(),
+            y=stars["y0"].to_list(),
             mode="markers",
             marker=dict(
                 color=_STAR_COLOR,
@@ -126,9 +127,5 @@ def plot_stars(
                 hoverinfo="skip",
             )
         )
-
-    fig.update_layout(
-        legend=dict(itemclick=False, itemdoubleclick=False),
-    )
 
     return fig

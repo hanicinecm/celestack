@@ -4,9 +4,9 @@
 
 The `StarCatalog` building block was split into `StarDetector` and `StarTracker` in the SPEC (commit `e8883bc`). This plan covers the `StarDetector` implementation — a new `star_detector` sub-package that detects stars on a single proxy frame using adaptive, segment-based detection with DAOStarFinder.
 
-**Goal**: Given a dark-subtracted grayscale proxy frame and a foreground mask, detect a target number of stars with uniform spatial coverage across the sky region, returning a polars DataFrame with all spatial quantities in **full-resolution coordinates**.
+**Goal**: Given a dark-subtracted grayscale proxy frame and a foreground mask, detect a target number of stars with uniform spatial coverage across the sky region, returning a polars DataFrame where all spatial quantities are in **the frame's own pixel coordinate system** (proxy pixels when `downscale_factor > 1`).
 
-**Coordinate system invariant**: detection runs on proxy arrays (which may have `downscale_factor > 1`), but all output coordinates, sizes, and FWHM values are immediately scaled to full-res by multiplying by `downscale_factor`. Running the same algorithm on a 2× and a 4× downscaled proxy should yield approximately the same results. Input parameters `min_separation` and `edge_margin` are expressed in full-res pixels.
+**Coordinate system**: `StarDetector` always works in the native coordinate system of the frame it was constructed with. `x`, `y`, `fwhm`, `min_separation`, and `edge_margin` are all in proxy pixels. As a final step, two extra columns `x0` and `y0` (full-resolution equivalents of `x` and `y`, computed by multiplying by `downscale_factor`) are appended to the output DataFrame. These are used by the plotting methods, whose axes are in full-resolution coordinates (as produced by `frame.plot()`).
 
 ---
 
@@ -62,22 +62,22 @@ def detect(
     n_segments: int = 40,
     *,
     roundness_range: tuple[float, float] = (-1.0, 1.0),
-    min_separation: float | None = None,  # defaults to 2 * self.fwhm (full-res)
-    edge_margin: int = 5,                 # in full-res pixels
+    min_separation: float | None = None,  # defaults to 2 * self.fwhm (proxy pixels)
+    edge_margin: int = 5,                 # in proxy pixels (the frame's coordinate system)
 ) -> pl.DataFrame:
 ```
 
 Pipeline:
 1. Segment sky: `_segmentation.segment_sky(mask.array, n_segments)` → `segment_labels` (2D array in proxy space, sky pixels labeled 0..N-1, foreground pixels -1).
 2. Per-segment adaptive detection: `_detection.detect_in_segments(frame.array, segment_labels, target_per_segment=2×proportional, fwhm=_fwhm_proxy, ...)` → raw star table with x/y in proxy coordinates.
-3. Scale all spatial quantities to full-res: `x`, `y`, `fwhm_col` ×= `downscale_factor`.
-4. Filter: `_filtering.filter_stars(stars, mask.array, downscale_factor, target_stars, min_separation, edge_margin)`.
-5. Assign sequential `star_id`, store in `self._stars`, store `segment_labels` in `self._segment_labels`, return.
+3. Filter: `_filtering.filter_stars(stars, mask.array, target_stars, min_separation, edge_margin)` — all coordinates remain in proxy space.
+4. Assign sequential `star_id`, store in `self._stars`, store `segment_labels` in `self._segment_labels`.
+5. Append full-resolution coordinate columns: `x0 = x * downscale_factor`, `y0 = y * downscale_factor`.
 
 **Progress bar**: wraps the per-segment detection loop (`n_segments` steps, description `"Detecting stars"`). Created via `progress_factory(n_segments, "Detecting stars")`.
 
-Returns DataFrame with columns: `star_id, x, y, flux, fwhm, roundness, threshold`.
-All spatial columns (`x`, `y`, `fwhm`) are in full-res pixels. `threshold` is the per-segment binary-search result (in proxy image units — needed by StarTracker).
+Returns DataFrame with columns: `star_id, x, y, flux, fwhm, roundness, threshold, x0, y0`.
+`x`, `y`, `fwhm` are in the frame's own pixel coordinates (proxy pixels). `x0`, `y0` are the full-resolution equivalents, used by the plotting methods. `threshold` is the per-segment binary-search result (in proxy image units — needed by StarTracker).
 
 ### `plot(*, show_segments: bool = False) -> go.Figure`
 
@@ -91,7 +91,7 @@ All spatial columns (`x`, `y`, `fwhm`) are in full-res pixels. `threshold` is th
 
 ### Read-only properties
 
-- `fwhm: float` — the auto-estimated FWHM in **full-res pixels** (`_fwhm_proxy * downscale_factor`).
+- `fwhm: float` — the auto-estimated FWHM in the **frame's own pixel coordinates** (proxy pixels; equals `_fwhm_proxy` directly).
 - `stars: pl.DataFrame` — raises `StarDetectorError` if `detect()` not yet called.
 
 ---
@@ -193,24 +193,24 @@ Note: `binary_search_threshold` is the reusable primitive for StarTracker propag
 
 ### `_filtering.py` — Post-Detection Filtering
 
-All filtering operates in **full-res coordinates** (caller has already scaled x/y).
+All filtering operates in the **frame's own pixel coordinates** (proxy pixels). Coordinates are not scaled — they are the same as produced by `detect_in_segments`.
 
 ```python
 def filter_stars(
     stars: pl.DataFrame,
     sky_mask: np.ndarray,         # proxy-space mask
-    downscale_factor: int,
     target_stars: int,
-    min_separation: float,        # full-res pixels
-    edge_margin: int,             # full-res pixels
+    min_separation: float,        # proxy pixels
+    edge_margin: int,             # proxy pixels
 ) -> pl.DataFrame:
 ```
 
 Pipeline (sequential):
-1. **Edge exclusion**: remove stars within `edge_margin` full-res pixels of:
-   - Frame edges (compare x/y against `image_shape * downscale_factor`).
-   - Mask boundary (dilate `sky_mask` by 1 pixel with `scipy.ndimage.binary_dilation` to find boundary pixels; scale boundary pixel coordinates to full-res; remove stars within `edge_margin` of any boundary pixel).
-2. **Proximity filter**: sort by flux descending; greedily accept stars, rejecting any candidate within `min_separation` full-res pixels of an already-accepted star.
+
+1. **Edge exclusion**: remove stars within `edge_margin` proxy pixels of:
+   - Frame edges (compare x/y against `sky_mask.shape`).
+   - Mask boundary (dilate `sky_mask` by 1 pixel with `scipy.ndimage.binary_dilation` to find boundary pixels; remove stars within `edge_margin` of any boundary pixel — all in proxy space, no scaling needed).
+2. **Proximity filter**: sort by flux descending; greedily accept stars, rejecting any candidate within `min_separation` proxy pixels of an already-accepted star.
 3. **Cap**: keep the `target_stars` brightest remaining stars.
 
 No progress bar — fast array/table operations on a small star count.
@@ -227,7 +227,7 @@ def plot_stars(
 ```
 
 - Base: `frame.plot()` — figure already has axes in full-res coordinates.
-- Stars scatter trace: x/y from `stars` DataFrame (already full-res). Marker sizes and colors from `flux` column (normalize to a reasonable visual range).
+- Stars scatter trace: use `x0`/`y0` columns from `stars` DataFrame (full-res equivalents) to match the frame axes. Marker sizes and colors from `flux` column (normalize to a reasonable visual range).
 - If `show_segments=True`: compute segment boundary pixels from `segment_labels` (pixels where a neighbor belongs to a different segment or is -1), scale their coordinates by `frame.downscale_factor`, render as scatter points (small dots forming boundary lines).
 
 ---

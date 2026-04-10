@@ -24,7 +24,11 @@ class StarDetector:
     optimal FWHM.  Call :meth:`detect` to run the full adaptive detection
     pipeline, and :meth:`plot` to visualize the results.
 
-    All output coordinates are in **full-resolution pixels**.
+    All spatial quantities (``x``, ``y``, ``fwhm``) in the output are in the
+    **frame's own pixel coordinate system** (proxy pixels when
+    ``frame.downscale_factor > 1``).  Full-resolution equivalents ``x0`` and
+    ``y0`` are appended as the final columns of the returned DataFrame to align
+    the stars with the full-resolution frame axes.
     """
 
     def __init__(self, frame: Frame, mask: Mask) -> None:
@@ -34,7 +38,7 @@ class StarDetector:
         match, then auto-estimates the optimal FWHM.
 
         Args:
-            frame: Dark-subtracted grayscale proxy frame.
+            frame: The grayscale proxy frame (optionally dark-subtracted).
             mask: Foreground mask (same pixel dimensions as *frame*).
 
         Raises:
@@ -59,18 +63,22 @@ class StarDetector:
 
         self._frame = frame
         self._mask = mask
-        self._fwhm_proxy: float = estimate_fwhm(frame.array, mask.array)
+        self._fwhm: float = estimate_fwhm(frame.array, mask.array)
         self._stars: pl.DataFrame | None = None
         self._segment_labels: np.ndarray | None = None
 
     @property
     def fwhm(self) -> float:
-        """Auto-estimated FWHM in full-resolution pixels."""
-        return self._fwhm_proxy * self._frame.downscale_factor
+        """Auto-estimated FWHM in the frame's own pixel coordinates."""
+        return self._fwhm
 
     @property
     def stars(self) -> pl.DataFrame:
-        """Detected star table (full-res coordinates).
+        """Detected star table.
+
+        Spatial columns ``x``, ``y``, ``fwhm`` are in the frame's own pixel
+        coordinates.  Columns ``x0``, ``y0`` hold the full-resolution
+        equivalents.
 
         Raises:
             StarDetectorError: If :meth:`detect` has not been called yet.
@@ -95,14 +103,16 @@ class StarDetector:
             target_stars: Desired number of output stars.
             n_segments: Number of sky segments for adaptive thresholding.
             roundness_range: (min, max) roundness bounds for DAOStarFinder.
-            min_separation: Minimum distance between stars in full-res pixels.
-                Defaults to ``2 * fwhm`` (full-res).
-            edge_margin: Exclusion zone in full-res pixels around frame
-                and mask edges.
+            min_separation: Minimum distance between stars in the frame's own
+                pixel coordinates.  Defaults to ``2 * fwhm``.
+            edge_margin: Exclusion zone in the frame's own pixel coordinates
+                around frame and mask edges.
 
         Returns:
             DataFrame with columns ``star_id, x, y, flux, fwhm, roundness,
-            threshold``. All spatial columns are in full-res pixels.
+            threshold, x0, y0``.  ``x``, ``y``, and ``fwhm`` are in the
+            frame's own pixel coordinates; ``x0`` and ``y0`` are the
+            full-resolution equivalents.
 
         Raises:
             ValueError: If *target_stars* < 1, *n_segments* < 1, or
@@ -144,7 +154,7 @@ class StarDetector:
                 self._frame.array,
                 segment_labels,
                 target_per_segment,
-                self._fwhm_proxy,
+                self._fwhm,
                 roundness_range,
                 bar,
             )
@@ -155,18 +165,10 @@ class StarDetector:
             msg = "No stars detected in any segment"
             raise StarDetectorError(msg)
 
-        # 4. Scale spatial quantities to full-res.
-        raw_stars = raw_stars.with_columns(
-            (pl.col("x") * dsf).alias("x"),
-            (pl.col("y") * dsf).alias("y"),
-            (pl.col("fwhm") * dsf).alias("fwhm"),
-        )
-
-        # 5. Filter.
+        # 4. Filter (all coordinates remain in the frame's own pixel space).
         filtered = filter_stars(
             raw_stars,
             self._mask.array,
-            dsf,
             target_stars,
             min_separation,
             edge_margin,
@@ -176,15 +178,21 @@ class StarDetector:
             msg = "No stars survived filtering"
             raise StarDetectorError(msg)
 
-        # 6. Assign sequential star_id.
+        # 5. Assign sequential star_id.
         filtered = filtered.with_row_index("star_id")
+
+        # 6. Append full-resolution coordinate columns.
+        filtered = filtered.with_columns(
+            (pl.col("x") * dsf).alias("x0"),
+            (pl.col("y") * dsf).alias("y0"),
+        )
 
         self._stars = filtered
         self._segment_labels = segment_labels
         return filtered
 
     def plot(self, *, show_segments: bool = False) -> go.Figure:
-        """Visualize detected stars overlaid on the proxy frame.
+        """Visualize detected stars and segments overlaid on the proxy frame.
 
         Args:
             show_segments: Whether to overlay segment boundary lines.

@@ -18,37 +18,46 @@ def test_full_pipeline_returns_stars(
     full_res_frame: Frame,
     sky_mask_top_half: Mask,
 ):
-    """Full detect pipeline returns a non-empty star table."""
+    """Full detect pipeline returns a non-empty star table with expected columns."""
     sd = StarDetector(full_res_frame, sky_mask_top_half)
     stars = sd.detect(target_stars=5, n_segments=2)
     assert len(stars) > 0
     assert "star_id" in stars.columns
     assert "x" in stars.columns
     assert "y" in stars.columns
+    assert "x0" in stars.columns
+    assert "y0" in stars.columns
 
 
-def test_coordinates_in_full_res(
+def test_coordinates_in_frame_space(
     proxy_frame: Frame,
     sky_mask_proxy: Mask,
 ):
-    """Output x/y coordinates are scaled by downscale_factor."""
+    """x/y stay in proxy space; x0/y0 hold full-res equivalents."""
     sd = StarDetector(proxy_frame, sky_mask_proxy)
     stars = sd.detect(target_stars=5, n_segments=2)
     assert len(stars) > 0
-    # Proxy is 128px, downscale_factor=2, so full-res is 256px.
-    # Stars should have coordinates in the 0-256 range.
-    assert stars["x"].max() <= 256
-    assert stars["y"].max() <= 256
+    # Proxy is 128px wide/tall; x/y must stay within proxy bounds.
+    assert stars["x"].max() <= 128
+    assert stars["y"].max() <= 128
+    # x0/y0 are proxy coords * downscale_factor=2, so within 0-256.
+    assert "x0" in stars.columns
+    assert "y0" in stars.columns
+    assert stars["x0"].max() <= 256
+    assert stars["y0"].max() <= 256
+    # Verify the relationship holds element-wise.
+    assert (stars["x0"] == stars["x"] * 2).all()
+    assert (stars["y0"] == stars["y"] * 2).all()
 
 
-def test_fwhm_is_full_res(
+def test_fwhm_is_in_frame_space(
     proxy_frame: Frame,
     sky_mask_proxy: Mask,
 ):
-    """fwhm property returns value scaled to full-res pixels."""
+    """fwhm property returns value in the frame's own pixel coordinates."""
     sd = StarDetector(proxy_frame, sky_mask_proxy)
-    # downscale_factor=2, so full-res FWHM should be >= proxy FWHM
-    assert sd.fwhm >= sd._fwhm_proxy
+    # fwhm is in proxy pixels, so it equals the internal _fwhm_proxy directly.
+    assert sd.fwhm == sd._fwhm
 
 
 def test_detect_replaces_previous(

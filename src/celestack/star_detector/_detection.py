@@ -29,7 +29,7 @@ def binary_search_threshold(
     Args:
         image: 2D grayscale array (float64).
         mask: 2D boolean array (``True`` = ignored by DAOStarFinder).
-        fwhm: FWHM in proxy pixels.
+        fwhm: FWHM in image pixels.
         target_count: Desired number of stars.
         roundness_range: (min, max) roundness for DAOStarFinder.
         threshold_bounds: (low, high) threshold range.
@@ -110,17 +110,17 @@ def detect_in_segments(
     target count.
 
     Args:
-        image: 2D grayscale proxy array.
+        image: 2D grayscale array.
         segment_labels: 2D int32 array (sky pixels 0..N-1, foreground -1).
         target_per_segment: Mapping from segment label to target star count.
-        fwhm: FWHM in proxy pixels.
+        fwhm: FWHM in image pixels.
         roundness_range: (min, max) roundness bounds.
         progress_bar: Progress bar to update after each segment.
 
     Returns:
         Combined DataFrame with columns
         ``x, y, flux, fwhm, roundness, threshold, segment_id``.
-        Coordinates are in proxy space.
+        Coordinates are in the same pixel space as *image*.
     """
     all_frames: list[pl.DataFrame] = []
     float_image = image.astype(np.float64)

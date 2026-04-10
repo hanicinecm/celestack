@@ -34,7 +34,6 @@ def test_proximity_filter_removes_faint_duplicate(simple_mask: np.ndarray):
     result = filter_stars(
         stars,
         simple_mask,
-        downscale_factor=1,
         target_stars=10,
         min_separation=5.0,
         edge_margin=1,
@@ -49,7 +48,6 @@ def test_edge_margin_removes_near_frame_edge(simple_mask: np.ndarray):
     result = filter_stars(
         stars,
         simple_mask,
-        downscale_factor=1,
         target_stars=10,
         min_separation=1.0,
         edge_margin=5,
@@ -65,7 +63,6 @@ def test_mask_boundary_exclusion(simple_mask: np.ndarray):
     result = filter_stars(
         stars,
         simple_mask,
-        downscale_factor=1,
         target_stars=10,
         min_separation=1.0,
         edge_margin=5,
@@ -81,7 +78,6 @@ def test_cap_keeps_brightest(simple_mask: np.ndarray):
     result = filter_stars(
         stars,
         simple_mask,
-        downscale_factor=1,
         target_stars=5,
         min_separation=1.0,
         edge_margin=1,
@@ -97,7 +93,6 @@ def test_empty_input_returns_empty(simple_mask: np.ndarray):
     result = filter_stars(
         stars,
         simple_mask,
-        downscale_factor=1,
         target_stars=10,
         min_separation=5.0,
         edge_margin=5,
@@ -105,15 +100,14 @@ def test_empty_input_returns_empty(simple_mask: np.ndarray):
     assert len(result) == 0
 
 
-def test_downscale_factor_scales_frame_edges():
-    """Edge exclusion uses full-res frame dimensions (mask * downscale_factor)."""
+def test_star_within_proxy_frame_bounds_is_kept():
+    """Star within proxy frame bounds passes the edge exclusion check."""
     mask = np.zeros((32, 32), dtype=bool)
-    # Star at x=60 is within bounds for 32*2=64 full-res width
-    stars = _star_df([(60.0, 10.0, 100.0)])
+    # Star at x=20 is well within the 32-px proxy width.
+    stars = _star_df([(20.0, 10.0, 100.0)])
     result = filter_stars(
         stars,
         mask,
-        downscale_factor=2,
         target_stars=10,
         min_separation=1.0,
         edge_margin=2,

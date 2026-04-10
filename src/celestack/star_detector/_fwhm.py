@@ -70,16 +70,16 @@ def estimate_fwhm(
     maximises detections across all sub-regions.
 
     Args:
-        image: 2D grayscale proxy array.
+        image: 2D grayscale array.
         sky_mask: 2D boolean array (``True`` = foreground).
         n_subregions: Number of sub-regions to sample.
-        fwhm_range: (min, max) FWHM in proxy pixels.
+        fwhm_range: (min, max) FWHM in image pixels.
         n_fwhm_steps: Number of FWHM values to sweep.
         threshold_sigma: Detection threshold as a multiple of the
             background standard deviation.
 
     Returns:
-        Estimated FWHM in proxy pixels.
+        Estimated FWHM in image pixels.
     """
     subregions = _pick_subregions(sky_mask, n_subregions)
     fwhm_values = np.linspace(fwhm_range[0], fwhm_range[1], n_fwhm_steps)
