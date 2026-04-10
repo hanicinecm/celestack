@@ -11,6 +11,8 @@ from photutils.utils.exceptions import NoDetectionsWarning
 
 from celestack.progress import ProgressBar
 
+_MAX_ITERATIONS = 15  # Maximum binary-search depth for detection threshold tuning
+
 
 def binary_search_threshold(
     image: np.ndarray,
@@ -19,7 +21,6 @@ def binary_search_threshold(
     target_count: int,
     roundness_range: tuple[float, float],
     threshold_bounds: tuple[float, float],
-    max_iterations: int = 15,
 ) -> tuple[float, pl.DataFrame]:
     """Binary-search the detection threshold to yield closest to *target_count* stars.
 
@@ -33,7 +34,6 @@ def binary_search_threshold(
         target_count: Desired number of stars.
         roundness_range: (min, max) roundness for DAOStarFinder.
         threshold_bounds: (low, high) threshold range.
-        max_iterations: Maximum number of binary-search steps.
 
     Returns:
         ``(optimal_threshold, stars_df)`` where *stars_df* has columns
@@ -52,7 +52,7 @@ def binary_search_threshold(
     )
     best_diff = float("inf")
 
-    for _ in range(max_iterations):
+    for _ in range(_MAX_ITERATIONS):
         mid = (lo + hi) / 2.0
         finder = DAOStarFinder(
             threshold=mid,
@@ -102,6 +102,9 @@ def detect_in_segments(
     fwhm: float,
     roundness_range: tuple[float, float],
     progress_bar: ProgressBar,
+    *,
+    threshold_min_sigma: float,
+    threshold_max_sigma: float,
 ) -> pl.DataFrame:
     """Run adaptive detection independently in each sky segment.
 
@@ -116,6 +119,8 @@ def detect_in_segments(
         fwhm: FWHM in image pixels.
         roundness_range: (min, max) roundness bounds.
         progress_bar: Progress bar to update after each segment.
+        threshold_min_sigma: Lower threshold bound as a multiple of background σ.
+        threshold_max_sigma: Upper threshold bound as a multiple of background σ.
 
     Returns:
         Combined DataFrame with columns
@@ -138,8 +143,8 @@ def detect_in_segments(
             progress_bar.update()
             continue
 
-        threshold_min = max(1.0, 2.0 * bg_std)
-        threshold_max = 15.0 * bg_std
+        threshold_min = threshold_min_sigma * bg_std
+        threshold_max = threshold_max_sigma * bg_std
 
         detection_mask = segment_labels != seg_id
 

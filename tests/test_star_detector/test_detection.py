@@ -87,6 +87,8 @@ def test_detect_in_segments_combines_results():
         fwhm=3.0,
         roundness_range=(-1.0, 1.0),
         progress_bar=bar,
+        threshold_min_sigma=2.0,
+        threshold_max_sigma=15.0,
     )
     assert len(result) > 0
     assert "segment_id" in result.columns
@@ -106,5 +108,7 @@ def test_detect_in_segments_empty_on_flat_image():
         fwhm=3.0,
         roundness_range=(-1.0, 1.0),
         progress_bar=bar,
+        threshold_min_sigma=2.0,
+        threshold_max_sigma=15.0,
     )
     assert len(result) == 0

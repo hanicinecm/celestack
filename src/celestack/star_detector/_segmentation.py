@@ -5,6 +5,9 @@ from __future__ import annotations
 import numpy as np
 from sklearn.cluster import KMeans
 
+_RANDOM_STATE = 42
+"""Fixed random state for KMeans, ensuring reproducible segmentation."""
+
 
 def segment_sky(
     sky_mask: np.ndarray,
@@ -25,7 +28,7 @@ def segment_sky(
     sky_rows, sky_cols = np.where(~sky_mask)
     coords = np.column_stack([sky_rows, sky_cols]).astype(np.float32)
 
-    kmeans = KMeans(n_clusters=n_segments, random_state=42, n_init="auto")
+    kmeans = KMeans(n_clusters=n_segments, random_state=_RANDOM_STATE, n_init="auto")
     cluster_ids = kmeans.fit_predict(coords).astype(np.int32)
 
     labels = np.full(sky_mask.shape, -1, dtype=np.int32)

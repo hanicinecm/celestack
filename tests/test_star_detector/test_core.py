@@ -201,14 +201,3 @@ def test_invalid_n_segments(
     sd = StarDetector(full_res_frame, sky_mask_top_half)
     with pytest.raises(ValueError, match="n_segments"):
         sd.segment(n_segments=0)
-
-
-def test_invalid_roundness_range(
-    full_res_frame: Frame,
-    sky_mask_top_half: Mask,
-):
-    """Invalid roundness_range raises ValueError."""
-    sd = StarDetector(full_res_frame, sky_mask_top_half)
-    sd.segment(n_segments=2)
-    with pytest.raises(ValueError, match="roundness"):
-        sd.detect(roundness_range=(1.0, -1.0))

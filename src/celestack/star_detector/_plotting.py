@@ -9,7 +9,7 @@ import polars as pl
 from celestack.frame.core import Frame
 
 _STAR_COLOR = "rgba(0, 255, 100, 0.7)"
-"""Default colour for star markers."""
+"""Colour for star markers."""
 
 _SEGMENT_BOUNDARY_COLOR = "rgba(255, 255, 0, 0.35)"
 """Colour for segment boundary dots."""

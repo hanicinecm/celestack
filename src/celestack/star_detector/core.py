@@ -10,11 +10,14 @@ from celestack.exceptions import StarDetectorError
 from celestack.frame.core import Frame
 from celestack.mask.core import Mask
 from celestack.progress import progress_factory
+from celestack.star_detector._config import get_config
 from celestack.star_detector._detection import detect_in_segments
 from celestack.star_detector._filtering import filter_stars
 from celestack.star_detector._fwhm import estimate_fwhm
 from celestack.star_detector._plotting import plot_stars as _plot_stars
 from celestack.star_detector._segmentation import segment_sky
+
+_cfg = get_config()
 
 
 class StarDetector:
@@ -63,7 +66,13 @@ class StarDetector:
 
         self._frame = frame
         self._mask = mask
-        self._fwhm: float = estimate_fwhm(frame.array, mask.array)
+        self._fwhm: float = estimate_fwhm(
+            frame.array,
+            mask.array,
+            _cfg.fwhm_range,
+            _cfg.fwhm_n_steps,
+            _cfg.fwhm_threshold_sigma,
+        )
         self._stars: pl.DataFrame | None = None
         self._segment_labels: np.ndarray | None = None
 
@@ -102,7 +111,7 @@ class StarDetector:
             raise StarDetectorError(msg)
         return self._segment_labels
 
-    def segment(self, n_segments: int = 40) -> np.ndarray:
+    def segment(self, n_segments: int = _cfg.default_n_segments) -> np.ndarray:
         """Segment the sky into regions for adaptive per-segment detection.
 
         Must be called before :meth:`detect`.  Can be called repeatedly with
@@ -129,11 +138,11 @@ class StarDetector:
 
     def detect(
         self,
-        target_stars: int = 2000,
+        target_stars: int = _cfg.default_target_stars,
         *,
-        roundness_range: tuple[float, float] = (-1.0, 1.0),
+        max_roundness: float = _cfg.default_max_roundness,
         min_separation: float | None = None,
-        edge_margin: int = 5,
+        edge_margin: int = _cfg.default_edge_margin,
     ) -> pl.DataFrame:
         """Run the adaptive detection pipeline on the current segmentation.
 
@@ -141,7 +150,7 @@ class StarDetector:
 
         Args:
             target_stars: Desired number of output stars.
-            roundness_range: (min, max) roundness bounds for DAOStarFinder.
+            max_roundness: Maximum roundness bounds for DAOStarFinder.
             min_separation: Minimum distance between stars in the frame's own
                 pixel coordinates.  Defaults to ``2 * fwhm``.
             edge_margin: Exclusion zone in the frame's own pixel coordinates
@@ -155,7 +164,7 @@ class StarDetector:
 
         Raises:
             StarDetectorError: If :meth:`segment` has not been called yet.
-            ValueError: If *target_stars* < 1 or *roundness_range* is invalid.
+            ValueError: If *target_stars* < 1.
             StarDetectorError: If no stars survive filtering.
         """
         if self._segment_labels is None:
@@ -164,12 +173,9 @@ class StarDetector:
         if target_stars < 1:
             msg = "target_stars must be at least 1"
             raise ValueError(msg)
-        if roundness_range[0] >= roundness_range[1]:
-            msg = "roundness_range min must be less than max"
-            raise ValueError(msg)
 
         if min_separation is None:
-            min_separation = 2.0 * self.fwhm
+            min_separation = _cfg.min_separation_fwhm_multiplier * self.fwhm
 
         dsf = self._frame.downscale_factor
         segment_labels = self._segment_labels
@@ -192,8 +198,10 @@ class StarDetector:
                 segment_labels,
                 target_per_segment,
                 self._fwhm,
-                roundness_range,
+                (-max_roundness, max_roundness),
                 bar,
+                threshold_min_sigma=_cfg.detection_threshold_min_sigma,
+                threshold_max_sigma=_cfg.detection_threshold_max_sigma,
             )
         finally:
             bar.close()

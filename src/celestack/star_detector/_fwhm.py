@@ -8,6 +8,13 @@ import numpy as np
 from photutils.detection import DAOStarFinder
 from photutils.utils.exceptions import NoDetectionsWarning
 
+_N_SUBREGIONS = 5
+"""Number of sky sub-regions sampled during FWHM estimation."""
+
+_SUBREGION_DIVISOR = 4
+"""Sub-region patch size as a fraction of the bounding-box extent
+(patch_size = max(height, width) // _SUBREGION_DIVISOR)."""
+
 
 def _pick_subregions(
     sky_mask: np.ndarray,
@@ -16,8 +23,8 @@ def _pick_subregions(
     """Return (y0, y1, x0, x1) bounding boxes for *n* sub-regions of the sky bbox.
 
     Picks 4 corners and a center region from the bounding box of all sky
-    pixels. Each sub-region is a square patch roughly 1/4 of the bounding-box
-    extent on a side.
+    pixels. Each sub-region is a square patch roughly 1/_SUBREGION_DIVISOR of
+    the bounding-box extent on a side.
 
     Args:
         sky_mask: 2D boolean array where ``True`` marks foreground.
@@ -32,7 +39,7 @@ def _pick_subregions(
 
     extent_r = max_r - min_r + 1
     extent_c = max_c - min_c + 1
-    patch_size = max(extent_r, extent_c) // 4
+    patch_size = max(extent_r, extent_c) // _SUBREGION_DIVISOR
 
     mid_r = (min_r + max_r) // 2
     mid_c = (min_c + max_c) // 2
@@ -57,11 +64,9 @@ def _pick_subregions(
 def estimate_fwhm(
     image: np.ndarray,
     sky_mask: np.ndarray,
-    *,
-    n_subregions: int = 5,
-    fwhm_range: tuple[float, float] = (2.0, 15.0),
-    n_fwhm_steps: int = 14,
-    threshold_sigma: float = 8.0,
+    fwhm_range: tuple[float, float],
+    n_fwhm_steps: int,
+    threshold_sigma: float,
 ) -> float:
     """Estimate the optimal FWHM for DAOStarFinder on the given image.
 
@@ -72,7 +77,6 @@ def estimate_fwhm(
     Args:
         image: 2D grayscale array.
         sky_mask: 2D boolean array (``True`` = foreground).
-        n_subregions: Number of sub-regions to sample.
         fwhm_range: (min, max) FWHM in image pixels.
         n_fwhm_steps: Number of FWHM values to sweep.
         threshold_sigma: Detection threshold as a multiple of the
@@ -81,7 +85,7 @@ def estimate_fwhm(
     Returns:
         Estimated FWHM in image pixels.
     """
-    subregions = _pick_subregions(sky_mask, n_subregions)
+    subregions = _pick_subregions(sky_mask, _N_SUBREGIONS)
     fwhm_values = np.linspace(fwhm_range[0], fwhm_range[1], n_fwhm_steps)
 
     best_fwhms: list[float] = []
