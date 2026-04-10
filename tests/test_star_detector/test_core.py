@@ -18,9 +18,10 @@ def test_full_pipeline_returns_stars(
     full_res_frame: Frame,
     sky_mask_top_half: Mask,
 ):
-    """Full detect pipeline returns a non-empty star table with expected columns."""
+    """Full segment+detect pipeline returns a non-empty star table with expected columns."""
     sd = StarDetector(full_res_frame, sky_mask_top_half)
-    stars = sd.detect(target_stars=5, n_segments=2)
+    sd.segment(n_segments=2)
+    stars = sd.detect(target_stars=5)
     assert len(stars) > 0
     assert "star_id" in stars.columns
     assert "x" in stars.columns
@@ -35,7 +36,8 @@ def test_coordinates_in_frame_space(
 ):
     """x/y stay in proxy space; x0/y0 hold full-res equivalents."""
     sd = StarDetector(proxy_frame, sky_mask_proxy)
-    stars = sd.detect(target_stars=5, n_segments=2)
+    sd.segment(n_segments=2)
+    stars = sd.detect(target_stars=5)
     assert len(stars) > 0
     # Proxy is 128px wide/tall; x/y must stay within proxy bounds.
     assert stars["x"].max() <= 128
@@ -56,8 +58,43 @@ def test_fwhm_is_in_frame_space(
 ):
     """fwhm property returns value in the frame's own pixel coordinates."""
     sd = StarDetector(proxy_frame, sky_mask_proxy)
-    # fwhm is in proxy pixels, so it equals the internal _fwhm_proxy directly.
+    # fwhm is in proxy pixels, so it equals the internal _fwhm directly.
     assert sd.fwhm == sd._fwhm
+
+
+def test_segment_stores_labels(
+    full_res_frame: Frame,
+    sky_mask_top_half: Mask,
+):
+    """segment() stores a label array accessible via segment_labels property."""
+    sd = StarDetector(full_res_frame, sky_mask_top_half)
+    labels = sd.segment(n_segments=3)
+    assert labels is sd.segment_labels
+    assert labels.shape == full_res_frame.shape[:2]
+    assert set(np.unique(labels)) <= set(range(3)) | {-1}
+
+
+def test_resegment_clears_stars(
+    full_res_frame: Frame,
+    sky_mask_top_half: Mask,
+):
+    """Calling segment() again after detect() clears the star table."""
+    sd = StarDetector(full_res_frame, sky_mask_top_half)
+    sd.segment(n_segments=2)
+    sd.detect(target_stars=5)
+    assert sd._stars is not None
+    sd.segment(n_segments=3)
+    assert sd._stars is None
+
+
+def test_detect_without_segment_raises(
+    full_res_frame: Frame,
+    sky_mask_top_half: Mask,
+):
+    """Calling detect() without prior segment() raises StarDetectorError."""
+    sd = StarDetector(full_res_frame, sky_mask_top_half)
+    with pytest.raises(StarDetectorError, match="segment"):
+        sd.detect(target_stars=5)
 
 
 def test_detect_replaces_previous(
@@ -66,8 +103,9 @@ def test_detect_replaces_previous(
 ):
     """Calling detect() twice replaces previous results."""
     sd = StarDetector(full_res_frame, sky_mask_top_half)
-    stars1 = sd.detect(target_stars=5, n_segments=2)
-    stars2 = sd.detect(target_stars=3, n_segments=2)
+    sd.segment(n_segments=2)
+    stars1 = sd.detect(target_stars=5)
+    stars2 = sd.detect(target_stars=3)
     assert stars2 is sd.stars
     assert stars1 is not stars2
 
@@ -82,14 +120,34 @@ def test_stars_before_detect_raises(
         _ = sd.stars
 
 
-def test_plot_before_detect_raises(
+def test_segment_labels_before_segment_raises(
     full_res_frame: Frame,
     sky_mask_top_half: Mask,
 ):
-    """Calling plot() before detect() raises StarDetectorError."""
+    """Accessing segment_labels before segment() raises StarDetectorError."""
     sd = StarDetector(full_res_frame, sky_mask_top_half)
-    with pytest.raises(StarDetectorError, match="detect"):
-        sd.plot()
+    with pytest.raises(StarDetectorError, match="segment"):
+        _ = sd.segment_labels
+
+
+def test_plot_always_returns_figure(
+    full_res_frame: Frame,
+    sky_mask_top_half: Mask,
+):
+    """plot() returns a figure regardless of whether segment/detect were called."""
+    import plotly.graph_objects as go
+
+    sd = StarDetector(full_res_frame, sky_mask_top_half)
+    assert isinstance(sd.plot(), go.Figure)
+    assert isinstance(sd.plot(show_segments=True), go.Figure)
+
+    sd.segment(n_segments=2)
+    assert isinstance(sd.plot(), go.Figure)
+    assert isinstance(sd.plot(show_segments=True), go.Figure)
+
+    sd.detect(target_stars=5)
+    assert isinstance(sd.plot(), go.Figure)
+    assert isinstance(sd.plot(show_segments=True), go.Figure)
 
 
 def test_non_grayscale_frame_raises(tmp_path: Path):
@@ -130,6 +188,7 @@ def test_invalid_target_stars(
 ):
     """target_stars < 1 raises ValueError."""
     sd = StarDetector(full_res_frame, sky_mask_top_half)
+    sd.segment(n_segments=2)
     with pytest.raises(ValueError, match="target_stars"):
         sd.detect(target_stars=0)
 
@@ -141,7 +200,7 @@ def test_invalid_n_segments(
     """n_segments < 1 raises ValueError."""
     sd = StarDetector(full_res_frame, sky_mask_top_half)
     with pytest.raises(ValueError, match="n_segments"):
-        sd.detect(n_segments=0)
+        sd.segment(n_segments=0)
 
 
 def test_invalid_roundness_range(
@@ -150,5 +209,6 @@ def test_invalid_roundness_range(
 ):
     """Invalid roundness_range raises ValueError."""
     sd = StarDetector(full_res_frame, sky_mask_top_half)
+    sd.segment(n_segments=2)
     with pytest.raises(ValueError, match="roundness"):
         sd.detect(roundness_range=(1.0, -1.0))

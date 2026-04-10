@@ -88,20 +88,59 @@ class StarDetector:
             raise StarDetectorError(msg)
         return self._stars
 
+    @property
+    def segment_labels(self) -> np.ndarray:
+        """2D segment label array computed by :meth:`segment`.
+
+        Sky pixels are labeled ``0..N-1``; foreground pixels are ``-1``.
+
+        Raises:
+            StarDetectorError: If :meth:`segment` has not been called yet.
+        """
+        if self._segment_labels is None:
+            msg = "segment() must be called before accessing segment_labels"
+            raise StarDetectorError(msg)
+        return self._segment_labels
+
+    def segment(self, n_segments: int = 40) -> np.ndarray:
+        """Segment the sky into regions for adaptive per-segment detection.
+
+        Must be called before :meth:`detect`.  Can be called repeatedly with
+        different values of *n_segments* to experiment; each call discards any
+        previously detected stars.
+
+        Args:
+            n_segments: Number of sky segments (K-Means clusters).
+
+        Returns:
+            2D int32 label array: sky pixels labeled ``0..N-1``,
+            foreground pixels labeled ``-1``.
+
+        Raises:
+            ValueError: If *n_segments* < 1.
+        """
+        if n_segments < 1:
+            msg = "n_segments must be at least 1"
+            raise ValueError(msg)
+
+        self._segment_labels = segment_sky(self._mask.array, n_segments)
+        self._stars = None  # prior detections are stale after re-segmentation
+        return self._segment_labels
+
     def detect(
         self,
         target_stars: int = 2000,
-        n_segments: int = 40,
         *,
         roundness_range: tuple[float, float] = (-1.0, 1.0),
         min_separation: float | None = None,
         edge_margin: int = 5,
     ) -> pl.DataFrame:
-        """Run the full adaptive detection pipeline.
+        """Run the adaptive detection pipeline on the current segmentation.
+
+        :meth:`segment` must be called first.
 
         Args:
             target_stars: Desired number of output stars.
-            n_segments: Number of sky segments for adaptive thresholding.
             roundness_range: (min, max) roundness bounds for DAOStarFinder.
             min_separation: Minimum distance between stars in the frame's own
                 pixel coordinates.  Defaults to ``2 * fwhm``.
@@ -115,15 +154,15 @@ class StarDetector:
             full-resolution equivalents.
 
         Raises:
-            ValueError: If *target_stars* < 1, *n_segments* < 1, or
-                *roundness_range* is invalid.
+            StarDetectorError: If :meth:`segment` has not been called yet.
+            ValueError: If *target_stars* < 1 or *roundness_range* is invalid.
             StarDetectorError: If no stars survive filtering.
         """
+        if self._segment_labels is None:
+            msg = "segment() must be called before detect()"
+            raise StarDetectorError(msg)
         if target_stars < 1:
             msg = "target_stars must be at least 1"
-            raise ValueError(msg)
-        if n_segments < 1:
-            msg = "n_segments must be at least 1"
             raise ValueError(msg)
         if roundness_range[0] >= roundness_range[1]:
             msg = "roundness_range min must be less than max"
@@ -133,11 +172,9 @@ class StarDetector:
             min_separation = 2.0 * self.fwhm
 
         dsf = self._frame.downscale_factor
+        segment_labels = self._segment_labels
 
-        # 1. Segment the sky.
-        segment_labels = segment_sky(self._mask.array, n_segments)
-
-        # 2. Compute per-segment target counts (2x proportional share).
+        # 1. Compute per-segment target counts (2x proportional share).
         unique, counts = np.unique(
             segment_labels[segment_labels >= 0], return_counts=True
         )
@@ -147,8 +184,8 @@ class StarDetector:
             for seg, c in zip(unique, counts, strict=True)
         }
 
-        # 3. Per-segment adaptive detection with progress bar.
-        bar = progress_factory(n_segments, "Detecting stars")
+        # 2. Per-segment adaptive detection with progress bar.
+        bar = progress_factory(len(target_per_segment), "Detecting stars")
         try:
             raw_stars = detect_in_segments(
                 self._frame.array,
@@ -165,7 +202,7 @@ class StarDetector:
             msg = "No stars detected in any segment"
             raise StarDetectorError(msg)
 
-        # 4. Filter (all coordinates remain in the frame's own pixel space).
+        # 3. Filter (all coordinates remain in the frame's own pixel space).
         filtered = filter_stars(
             raw_stars,
             self._mask.array,
@@ -178,35 +215,31 @@ class StarDetector:
             msg = "No stars survived filtering"
             raise StarDetectorError(msg)
 
-        # 5. Assign sequential star_id.
+        # 4. Assign sequential star_id.
         filtered = filtered.with_row_index("star_id")
 
-        # 6. Append full-resolution coordinate columns.
+        # 5. Append full-resolution coordinate columns.
         filtered = filtered.with_columns(
             (pl.col("x") * dsf).alias("x0"),
             (pl.col("y") * dsf).alias("y0"),
         )
 
         self._stars = filtered
-        self._segment_labels = segment_labels
         return filtered
 
     def plot(self, *, show_segments: bool = False) -> go.Figure:
-        """Visualize detected stars and segments overlaid on the proxy frame.
+        """Visualize available detection results overlaid on the frame.
+
+        Always returns a figure.  Stars are included if :meth:`detect` has
+        been called; segment boundaries are included if :meth:`segment` has
+        been called and *show_segments* is ``True``.
 
         Args:
             show_segments: Whether to overlay segment boundary lines.
 
         Returns:
-            Plotly figure with star markers and optional segment boundaries.
-
-        Raises:
-            StarDetectorError: If :meth:`detect` has not been called yet.
+            Plotly figure with the frame image and any available overlays.
         """
-        if self._stars is None:
-            msg = "detect() must be called before plot()"
-            raise StarDetectorError(msg)
-
         return _plot_stars(
             self._frame,
             self._stars,

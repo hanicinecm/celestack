@@ -65,51 +65,55 @@ def _segment_boundary_coords(
 
 def plot_stars(
     frame: Frame,
-    stars: pl.DataFrame,
+    stars: pl.DataFrame | None,
     segment_labels: np.ndarray | None,
     show_segments: bool,
 ) -> go.Figure:
-    """Create a Plotly figure with detected stars overlaid on the frame.
+    """Create a Plotly figure with available detection results overlaid on the frame.
+
+    Both *stars* and *segment_labels* are optional — the figure is always
+    returned regardless of which have been computed.
 
     Args:
         frame: Source frame (provides the base image via ``plot()``).
-        stars: DataFrame with ``x0``, ``y0``, ``flux`` columns.  ``x0`` and
-            ``y0`` are in full-resolution pixel coordinates, matching the axes
-            of ``frame.plot()``.
+        stars: Optional DataFrame with ``x0``, ``y0``, ``flux`` columns.
+            ``x0`` and ``y0`` are in full-resolution pixel coordinates,
+            matching the axes of ``frame.plot()``.  Pass ``None`` to omit.
         segment_labels: Optional 2D segment label array (label-image space).
         show_segments: Whether to overlay segment boundary lines.
 
     Returns:
-        Plotly figure with the frame image and star scatter overlay.
+        Plotly figure with the frame image and any available overlays.
     """
     fig = frame.plot()
 
-    flux = stars["flux"].to_numpy()
-    if flux.size > 0:
-        flux_min, flux_max = float(flux.min()), float(flux.max())
-        flux_range = flux_max - flux_min if flux_max > flux_min else 1.0
-        sizes = (
-            _MIN_STAR_MARKER
-            + (_MAX_STAR_MARKER - _MIN_STAR_MARKER) * (flux - flux_min) / flux_range
-        )
-    else:
-        sizes = np.array([], dtype=np.float64)
+    if stars is not None:
+        flux = stars["flux"].to_numpy()
+        if flux.size > 0:
+            flux_min, flux_max = float(flux.min()), float(flux.max())
+            flux_range = flux_max - flux_min if flux_max > flux_min else 1.0
+            sizes = (
+                _MIN_STAR_MARKER
+                + (_MAX_STAR_MARKER - _MIN_STAR_MARKER) * (flux - flux_min) / flux_range
+            )
+        else:
+            sizes = np.array([], dtype=np.float64)
 
-    fig.add_trace(
-        go.Scatter(
-            x=stars["x0"].to_list(),
-            y=stars["y0"].to_list(),
-            mode="markers",
-            marker=dict(
-                color=_STAR_COLOR,
-                size=sizes.tolist() if sizes.size > 0 else [],
-            ),
-            name="Stars",
-            showlegend=True,
-            hovertext=[f"flux={f:.0f}" for f in flux] if flux.size > 0 else [],
-            hoverinfo="text",
+        fig.add_trace(
+            go.Scatter(
+                x=stars["x0"].to_list(),
+                y=stars["y0"].to_list(),
+                mode="markers",
+                marker=dict(
+                    color=_STAR_COLOR,
+                    size=sizes.tolist() if sizes.size > 0 else [],
+                ),
+                name="Stars",
+                showlegend=True,
+                hovertext=[f"flux={f:.0f}" for f in flux] if flux.size > 0 else [],
+                hoverinfo="text",
+            )
         )
-    )
 
     if show_segments and segment_labels is not None:
         bx, by = _segment_boundary_coords(segment_labels, frame.downscale_factor)
