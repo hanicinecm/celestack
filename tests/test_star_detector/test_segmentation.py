@@ -3,9 +3,15 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from celestack.progress import set_progress_factory
-from celestack.star_detector._segmentation import segment_adjacency, segment_sky
+from celestack.star_detector._segmentation import (
+    closest_segment,
+    segment_adjacency,
+    segment_sky,
+    spaced_segments,
+)
 
 set_progress_factory(None)
 
@@ -122,3 +128,124 @@ def test_adjacency_symmetric():
     for seg, neighbors in adj.items():
         for nbr in neighbors:
             assert seg in adj[nbr]
+
+
+def test_closest_segment_picks_obvious_winner():
+    """Query point inside a segment picks that segment."""
+    labels = np.array(
+        [
+            [0, 0, 1, 1],
+            [0, 0, 1, 1],
+            [2, 2, 3, 3],
+            [2, 2, 3, 3],
+        ],
+        dtype=np.int32,
+    )
+    assert closest_segment(labels, (0.0, 0.0)) == 0
+    assert closest_segment(labels, (0.0, 3.0)) == 1
+    assert closest_segment(labels, (3.0, 0.0)) == 2
+    assert closest_segment(labels, (3.0, 3.0)) == 3
+
+
+def test_closest_segment_ignores_foreground():
+    """Foreground pixels do not define centroids."""
+    labels = np.array(
+        [
+            [0, -1, -1],
+            [-1, -1, -1],
+            [-1, -1, 1],
+        ],
+        dtype=np.int32,
+    )
+    # Point near the foreground center still resolves to one of 0 or 1.
+    result = closest_segment(labels, (1.0, 1.0))
+    assert result in (0, 1)
+
+
+def test_closest_segment_empty_raises():
+    """All-foreground labels raise ValueError."""
+    labels = np.full((5, 5), -1, dtype=np.int32)
+    with pytest.raises(ValueError, match=r"no sky pixels"):
+        closest_segment(labels, (0.0, 0.0))
+
+
+def test_spaced_segments_returns_k_distinct_ids():
+    """Result has exactly k distinct, valid segment ids."""
+    labels = segment_sky(np.zeros((64, 64), dtype=bool), n_segments=8)
+    chosen = spaced_segments(labels, k=4)
+    assert len(chosen) == 4
+    assert len(set(chosen)) == 4
+    for seg in chosen:
+        assert 0 <= seg < 8
+
+
+def test_spaced_segments_picks_corners_on_grid():
+    """On a 2x2 segment grid with k=4, all four corners are chosen."""
+    labels = np.array(
+        [
+            [0, 0, 1, 1],
+            [0, 0, 1, 1],
+            [2, 2, 3, 3],
+            [2, 2, 3, 3],
+        ],
+        dtype=np.int32,
+    )
+    chosen = spaced_segments(labels, k=4)
+    assert set(chosen) == {0, 1, 2, 3}
+
+
+def test_spaced_segments_k_equals_one():
+    """k=1 returns the seed segment only."""
+    labels = segment_sky(np.zeros((32, 32), dtype=bool), n_segments=5)
+    chosen = spaced_segments(labels, k=1)
+    assert len(chosen) == 1
+
+
+def test_spaced_segments_k_too_large_raises():
+    """k greater than the number of segments raises ValueError."""
+    labels = np.array([[0, 0], [1, 1]], dtype=np.int32)
+    with pytest.raises(ValueError, match=r"exceeds the number"):
+        spaced_segments(labels, k=3)
+
+
+def test_spaced_segments_invalid_k_raises():
+    """k < 1 raises ValueError."""
+    labels = np.array([[0, 0], [1, 1]], dtype=np.int32)
+    with pytest.raises(ValueError, match=r"k must be at least 1"):
+        spaced_segments(labels, k=0)
+
+
+def test_spaced_segments_empty_raises():
+    """All-foreground labels raise ValueError."""
+    labels = np.full((5, 5), -1, dtype=np.int32)
+    with pytest.raises(ValueError, match=r"no sky pixels"):
+        spaced_segments(labels, k=2)
+
+
+def test_spaced_segments_deterministic():
+    """Same input yields the same selection."""
+    labels = segment_sky(np.zeros((48, 48), dtype=bool), n_segments=10)
+    assert spaced_segments(labels, k=5) == spaced_segments(labels, k=5)
+
+
+def test_spaced_segments_spread_beats_arbitrary():
+    """Greedy selection has better min pairwise distance than naive order."""
+    labels = segment_sky(np.zeros((80, 80), dtype=bool), n_segments=12)
+    k = 5
+    chosen = spaced_segments(labels, k=k)
+
+    def _min_pairwise(seg_ids: list[int]) -> float:
+        centroids = []
+        for seg in seg_ids:
+            rows, cols = np.where(labels == seg)
+            centroids.append((rows.mean(), cols.mean()))
+        dists = [
+            (a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2
+            for i, a in enumerate(centroids)
+            for b in centroids[i + 1 :]
+        ]
+        return float(min(dists))
+
+    greedy_spread = _min_pairwise(chosen)
+    naive_spread = _min_pairwise(list(range(k)))
+    assert greedy_spread >= naive_spread

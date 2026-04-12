@@ -72,6 +72,111 @@ def segment_adjacency(labels: np.ndarray) -> dict[int, set[int]]:
     return dict(adjacency)
 
 
+def closest_segment(labels: np.ndarray, point: tuple[float, float]) -> int:
+    """Return the segment id whose centroid is closest to *point*.
+
+    Distance is Euclidean in pixel ``(row, col)`` units.  *point* need not
+    lie on a sky pixel — only centroid proximity matters.  Centroid-based
+    proximity aligns naturally with K-Means Voronoi-like segments; other
+    segmentation schemes with strongly non-convex regions may mispick.
+
+    Args:
+        labels: 2D int32 label array, as produced by :func:`segment_sky`.
+        point: ``(row, col)`` coordinates of the query point.
+
+    Returns:
+        Segment id of the closest segment.
+
+    Raises:
+        ValueError: If *labels* contains no sky pixels.
+    """
+    sky_rows, sky_cols = np.where(labels >= 0)
+    if sky_rows.size == 0:
+        msg = "labels contains no sky pixels"
+        raise ValueError(msg)
+
+    seg_ids = labels[sky_rows, sky_cols]
+    unique_ids, inverse = np.unique(seg_ids, return_inverse=True)
+
+    row_sums = np.bincount(inverse, weights=sky_rows)
+    col_sums = np.bincount(inverse, weights=sky_cols)
+    counts = np.bincount(inverse)
+
+    centroid_rows = row_sums / counts
+    centroid_cols = col_sums / counts
+
+    dr = centroid_rows - point[0]
+    dc = centroid_cols - point[1]
+    sq_dist = dr * dr + dc * dc
+
+    return int(unique_ids[int(np.argmin(sq_dist))])
+
+
+def spaced_segments(labels: np.ndarray, k: int) -> list[int]:
+    """Pick *k* segments with maximally-spread centroids.
+
+    Uses Gonzalez's greedy farthest-point sampling: seeds with the segment
+    whose centroid is closest to the sky's overall centroid, then repeatedly
+    adds the segment that maximizes the minimum Euclidean distance to the
+    already-chosen set.  The result is a 2-approximation to the optimal
+    max-min dispersion, which in practice is near-optimal for K-Means-style
+    Voronoi segments.
+
+    Args:
+        labels: 2D int32 label array, as produced by :func:`segment_sky`.
+        k: Number of segments to select.
+
+    Returns:
+        List of *k* segment ids in the order they were selected.
+
+    Raises:
+        ValueError: If *k* < 1, *labels* has no sky pixels, or there are
+            fewer than *k* distinct segments available.
+    """
+    if k < 1:
+        msg = "k must be at least 1"
+        raise ValueError(msg)
+
+    sky_rows, sky_cols = np.where(labels >= 0)
+    if sky_rows.size == 0:
+        msg = "labels contains no sky pixels"
+        raise ValueError(msg)
+
+    seg_ids = labels[sky_rows, sky_cols]
+    unique_ids, inverse = np.unique(seg_ids, return_inverse=True)
+    n_segments = unique_ids.size
+
+    if k > n_segments:
+        msg = f"k={k} exceeds the number of available segments ({n_segments})"
+        raise ValueError(msg)
+
+    counts = np.bincount(inverse)
+    centroid_rows = np.bincount(inverse, weights=sky_rows) / counts
+    centroid_cols = np.bincount(inverse, weights=sky_cols) / counts
+
+    # Seed: segment whose centroid is closest to the sky's overall centroid.
+    sky_cr = float(sky_rows.mean())
+    sky_cc = float(sky_cols.mean())
+    seed_dr = centroid_rows - sky_cr
+    seed_dc = centroid_cols - sky_cc
+    seed_idx = int(np.argmin(seed_dr * seed_dr + seed_dc * seed_dc))
+
+    chosen: list[int] = [seed_idx]
+    min_sq_dist = (centroid_rows - centroid_rows[seed_idx]) ** 2 + (
+        centroid_cols - centroid_cols[seed_idx]
+    ) ** 2
+
+    while len(chosen) < k:
+        next_idx = int(np.argmax(min_sq_dist))
+        chosen.append(next_idx)
+        new_sq_dist = (centroid_rows - centroid_rows[next_idx]) ** 2 + (
+            centroid_cols - centroid_cols[next_idx]
+        ) ** 2
+        min_sq_dist = np.minimum(min_sq_dist, new_sq_dist)
+
+    return [int(unique_ids[i]) for i in chosen]
+
+
 def _collect_pairs(
     a: np.ndarray,
     b: np.ndarray,

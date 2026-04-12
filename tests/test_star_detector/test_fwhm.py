@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import numpy as np
 
-from celestack.star_detector._fwhm import _pick_subregions, estimate_fwhm
+from celestack.progress import set_progress_factory
+from celestack.star_detector._fwhm import _sample_mask, estimate_fwhm
+from celestack.star_detector._segmentation import segment_sky
+
+set_progress_factory(None)
 
 
 def _gaussian_star_image(
@@ -28,35 +32,45 @@ def _gaussian_star_image(
 
 
 def test_estimated_fwhm_within_range():
-    """Estimated FWHM for known Gaussian blobs is within ±2px of the true value."""
+    """Estimated FWHM for known Gaussian blobs is within +/-2 px of the true value."""
     true_fwhm = 5.0
     image = _gaussian_star_image(fwhm=true_fwhm)
-    sky_mask = np.zeros(image.shape, dtype=bool)  # all sky
-    estimated = estimate_fwhm(image, sky_mask, (2.0, 15.0), 14, 8.0)
+    sky_mask = np.zeros(image.shape, dtype=bool)
+    labels = segment_sky(sky_mask, n_segments=8)
+    estimated = estimate_fwhm(image, labels, (2.0, 15.0), 14, 8.0)
     assert abs(estimated - true_fwhm) <= 2.0
 
 
-def test_pick_subregions_returns_correct_count():
-    """_pick_subregions returns the requested number of sub-regions."""
-    mask = np.zeros((100, 100), dtype=bool)
-    mask[80:, :] = True
-    regions = _pick_subregions(mask, 5)
-    assert len(regions) == 5
+def test_sample_mask_exposes_only_chosen_segments():
+    """The sample mask exposes exactly the pixels of the chosen segments."""
+    labels = segment_sky(np.zeros((64, 64), dtype=bool), n_segments=8)
+    mask = _sample_mask(labels, n=3)
+    exposed = labels[~mask]
+    assert exposed.size > 0
+    assert np.all(exposed >= 0)
+    assert len(np.unique(exposed)) == 3
 
 
-def test_pick_subregions_within_bounds():
-    """All sub-regions fall within the sky bounding box."""
-    mask = np.zeros((100, 100), dtype=bool)
-    mask[80:, :] = True
-    regions = _pick_subregions(mask, 5)
-    for y0, y1, x0, x1 in regions:
-        assert 0 <= y0 < y1 <= 100
-        assert 0 <= x0 < x1 <= 100
+def test_sample_mask_hides_foreground():
+    """Foreground pixels are always hidden by the sample mask."""
+    sky_mask = np.zeros((64, 64), dtype=bool)
+    sky_mask[40:, :] = True
+    labels = segment_sky(sky_mask, n_segments=5)
+    mask = _sample_mask(labels, n=3)
+    assert np.all(mask[labels == -1])
 
 
-def test_estimate_fwhm_fallback_on_no_sky():
-    """Returns a reasonable fallback when sub-regions have no detections."""
-    image = np.full((32, 32), 100, dtype=np.uint16)  # flat image, no stars
-    sky_mask = np.zeros((32, 32), dtype=bool)
-    result = estimate_fwhm(image, sky_mask, (2.0, 15.0), 14, 8.0)
+def test_sample_mask_caps_at_available_segments():
+    """Requesting more segments than available caps to the number available."""
+    labels = segment_sky(np.zeros((32, 32), dtype=bool), n_segments=3)
+    mask = _sample_mask(labels, n=10)
+    exposed = labels[~mask]
+    assert len(np.unique(exposed)) == 3
+
+
+def test_estimate_fwhm_fallback_on_flat_image():
+    """Returns a reasonable fallback when the image has no detectable signal."""
+    image = np.full((64, 64), 100, dtype=np.uint16)
+    labels = segment_sky(np.zeros((64, 64), dtype=bool), n_segments=5)
+    result = estimate_fwhm(image, labels, (2.0, 15.0), 14, 8.0)
     assert 2.0 <= result <= 15.0

@@ -10,6 +10,7 @@ from celestack.config import CFG
 from celestack.exceptions import StarDetectorError
 from celestack.frame.core import Frame
 from celestack.mask.core import Mask
+from celestack.star_detector._fwhm import estimate_fwhm
 from celestack.star_detector._plotting import plot_stars as _plot_stars
 from celestack.star_detector._segmentation import segment_sky
 
@@ -141,27 +142,41 @@ class StarDetector:
         self._segment_labels = segment_sky(self._mask.array, n_segments)
         self._stars = None  # prior detections are stale after re-segmentation
 
-    # def estimate_fwhm(
-    #     self,
-    #     *,
-    #     range: tuple[float, float] = CFG.star_detector.fwhm_range,
-    #     resolution: int = CFG.star_detector.fwhm_n_steps,
-    #     threshold_sigma: float = CFG.star_detector.fwhm_threshold_sigma,
-    # ) -> None:
-    #     """Estimate the FWHM of stars in the frame's own pixels.
+    def estimate_fwhm(
+        self,
+        *,
+        range: tuple[float, float] = CFG.star_detector.fwhm_range,
+        resolution: int = CFG.star_detector.fwhm_n_steps,
+        threshold_sigma: float = CFG.star_detector.fwhm_threshold_sigma,
+    ) -> None:
+        """Estimate the FWHM of stars in the frame's own pixels.
 
-    #     Finds the FHWM for the DAOSStarFinder algorithm, which maximizes the
-    #     star detection for a given threshold.  The estimated FWHM is
-    #     stored internally and used as the default for :meth:`detect`.
-    #     """
+        Finds the FHWM for the DAOSStarFinder algorithm, which maximizes the
+        star detection for a given threshold.  The estimated FWHM is
+        stored internally and used as the default for :meth:`detect`.
 
-    #     self._fwhm = estimate_fwhm(
-    #         image=self._frame.array,
-    #         sky_mask=self._mask.array,
-    #         fwhm_range=range,
-    #         n_fwhm_steps=resolution,
-    #         threshold_sigma=threshold_sigma,
-    #     )
+        Args:
+            range: (min, max) FWHM in the full-resolution image pixels to sweep.
+            resolution: Number of FWHM values to sweep within *range*.
+            threshold_sigma: Detection threshold as a multiple of the
+                background standard deviation.
+
+        Warning: The range parameter controling the sweep is in the full-resolution
+            image pixels, not the frame's own pixels.  This is to ensure similar
+            behavior across different downscaling factors.
+        """
+        scaled_range = (
+            range[0] / self._frame.downscale_factor,
+            range[1] / self._frame.downscale_factor,
+        )
+
+        self._fwhm = estimate_fwhm(
+            image=self._frame.array,
+            segment_labels=self.segment_labels,
+            fwhm_range=scaled_range,
+            n_fwhm_steps=resolution,
+            threshold_sigma=threshold_sigma,
+        )
 
     # def detect(
     #     self,
