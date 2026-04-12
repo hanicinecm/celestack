@@ -9,7 +9,7 @@ import polars as pl
 from photutils.detection import DAOStarFinder
 from photutils.utils.exceptions import NoDetectionsWarning
 
-from celestack.progress import ProgressBar
+from celestack.progress import progress_factory
 
 _MAX_ITERATIONS = 15  # Maximum binary-search depth for detection threshold tuning
 
@@ -101,7 +101,6 @@ def detect_in_segments(
     target_per_segment: dict[int, int],
     fwhm: float,
     roundness_range: tuple[float, float],
-    progress_bar: ProgressBar,
     *,
     threshold_min_sigma: float,
     threshold_max_sigma: float,
@@ -112,13 +111,15 @@ def detect_in_segments(
     pixels and binary-searches the threshold to match the per-segment
     target count.
 
+    The detection is tracked with a progress bar that updates on completion
+    of each segment's detection.
+
     Args:
         image: 2D grayscale array.
         segment_labels: 2D int32 array (sky pixels 0..N-1, foreground -1).
         target_per_segment: Mapping from segment label to target star count.
         fwhm: FWHM in image pixels.
         roundness_range: (min, max) roundness bounds.
-        progress_bar: Progress bar to update after each segment.
         threshold_min_sigma: Lower threshold bound as a multiple of background σ.
         threshold_max_sigma: Upper threshold bound as a multiple of background σ.
 
@@ -130,41 +131,42 @@ def detect_in_segments(
     all_frames: list[pl.DataFrame] = []
     float_image = image.astype(np.float64)
 
-    for seg_id, target in sorted(target_per_segment.items()):
-        seg_pixels = float_image[segment_labels == seg_id]
-        if seg_pixels.size == 0:
-            progress_bar.update()
-            continue
+    with progress_factory(len(target_per_segment), "Detecting stars") as bar:
+        for seg_id, target in sorted(target_per_segment.items()):
+            seg_pixels = float_image[segment_labels == seg_id]
+            if seg_pixels.size == 0:
+                bar.update()
+                continue
 
-        med = float(np.median(seg_pixels))
-        mad = float(np.median(np.abs(seg_pixels - med)))
-        bg_std = 1.4826 * mad
-        if bg_std == 0:
-            progress_bar.update()
-            continue
+            med = float(np.median(seg_pixels))
+            mad = float(np.median(np.abs(seg_pixels - med)))
+            bg_std = 1.4826 * mad
+            if bg_std == 0:
+                bar.update()
+                continue
 
-        threshold_min = threshold_min_sigma * bg_std
-        threshold_max = threshold_max_sigma * bg_std
+            threshold_min = threshold_min_sigma * bg_std
+            threshold_max = threshold_max_sigma * bg_std
 
-        detection_mask = segment_labels != seg_id
+            detection_mask = segment_labels != seg_id
 
-        threshold, stars_df = binary_search_threshold(
-            float_image,
-            detection_mask,
-            fwhm,
-            target,
-            roundness_range,
-            (threshold_min, threshold_max),
-        )
-
-        if len(stars_df) > 0:
-            stars_df = stars_df.with_columns(
-                pl.lit(threshold).alias("threshold"),
-                pl.lit(seg_id).alias("segment_id"),
+            threshold, stars_df = binary_search_threshold(
+                float_image,
+                detection_mask,
+                fwhm,
+                target,
+                roundness_range,
+                (threshold_min, threshold_max),
             )
-            all_frames.append(stars_df)
 
-        progress_bar.update()
+            if len(stars_df) > 0:
+                stars_df = stars_df.with_columns(
+                    pl.lit(threshold).alias("threshold"),
+                    pl.lit(seg_id).alias("segment_id"),
+                )
+                all_frames.append(stars_df)
+
+            bar.update()
 
     if not all_frames:
         return pl.DataFrame(

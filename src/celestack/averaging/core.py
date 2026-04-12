@@ -17,6 +17,7 @@ def average_frames(
     *,
     reference_frame: Frame | None = None,
     band_height: int | None = DEFAULT_BAND_HEIGHT,
+    description: str = "Averaging",
 ) -> Frame:
     """Average a list of frames into a single detached in-memory frame.
 
@@ -75,17 +76,16 @@ def average_frames(
     float_dtype = np.float32
 
     n_bands = (height + band_height - 1) // band_height
-    bar = progress_factory(n_bands, "Averaging")
     result_bands: list[np.ndarray] = []
-    for y_start in range(0, height, band_height):
-        y_end = min(y_start + band_height, height)
-        band_slices = [
-            f.read_tile(0, y_start, width, y_end, unload_array=True) for f in frames
-        ]
-        stack = np.stack(band_slices, axis=0).astype(float_dtype)
-        result_bands.append(combine(stack).astype(input_dtype))
-        bar.update()
-    bar.close()
+    with progress_factory(n_bands, description) as bar:
+        for y_start in range(0, height, band_height):
+            y_end = min(y_start + band_height, height)
+            band_slices = [
+                f.read_tile(0, y_start, width, y_end, unload_array=True) for f in frames
+            ]
+            stack = np.stack(band_slices, axis=0).astype(float_dtype)
+            result_bands.append(combine(stack).astype(input_dtype))
+            bar.update()
 
     result_array = np.concatenate(result_bands, axis=0)
 

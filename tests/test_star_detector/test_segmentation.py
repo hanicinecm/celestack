@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import numpy as np
 
+from celestack.progress import set_progress_factory
 from celestack.star_detector._segmentation import segment_sky
+
+set_progress_factory(None)
 
 
 def test_foreground_pixels_labeled_minus_one():

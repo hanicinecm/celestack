@@ -7,6 +7,8 @@ from dataclasses import dataclass
 import numpy as np
 from sklearn.cluster import KMeans
 
+from celestack.progress import progress_factory
+
 
 @dataclass
 class ClusterWeights:
@@ -73,6 +75,8 @@ def run_kmeans(
 ) -> np.ndarray:
     """Run K-Means clustering and return flat label assignments.
 
+    Tracked with a progress bar that is displayed for the duration of the fit.
+
     Args:
         features: Feature matrix with shape (N, D).
         n_clusters: Number of clusters.
@@ -81,8 +85,11 @@ def run_kmeans(
     Returns:
         Flat label array with shape (N,) and dtype int32.
     """
-    kmeans = KMeans(n_clusters=n_clusters, random_state=random_state, n_init="auto")
-    return kmeans.fit_predict(features).astype(np.int32)
+    with progress_factory(total=None, description="Clustering pixels"):
+        kmeans = KMeans(n_clusters=n_clusters, random_state=random_state, n_init="auto")
+        labels = kmeans.fit_predict(features).astype(np.int32)
+
+    return labels
 
 
 def relabel_by_descending_y(labels: np.ndarray, n_clusters: int) -> np.ndarray:

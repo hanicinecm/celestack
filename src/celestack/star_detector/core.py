@@ -10,10 +10,6 @@ from celestack.config import CFG
 from celestack.exceptions import StarDetectorError
 from celestack.frame.core import Frame
 from celestack.mask.core import Mask
-from celestack.progress import progress_factory
-from celestack.star_detector._detection import detect_in_segments
-from celestack.star_detector._filtering import filter_stars
-from celestack.star_detector._fwhm import estimate_fwhm
 from celestack.star_detector._plotting import plot_stars as _plot_stars
 from celestack.star_detector._segmentation import segment_sky
 
@@ -141,6 +137,7 @@ class StarDetector:
             msg = "n_segments must be at least 1"
             raise ValueError(msg)
 
+        # Run the k-means segmentation:
         self._segment_labels = segment_sky(self._mask.array, n_segments)
         self._stars = None  # prior detections are stale after re-segmentation
 
@@ -220,21 +217,16 @@ class StarDetector:
     #         for seg, c in zip(unique, counts, strict=True)
     #     }
 
-    #     # 2. Per-segment adaptive detection with progress bar.
-    #     bar = progress_factory(len(target_per_segment), "Detecting stars")
-    #     try:
-    #         raw_stars = detect_in_segments(
-    #             self._frame.array,
-    #             segment_labels,
-    #             target_per_segment,
-    #             self._fwhm,
-    #             (-max_roundness, max_roundness),
-    #             bar,
-    #             threshold_min_sigma=_cfg.detection_threshold_min_sigma,
-    #             threshold_max_sigma=_cfg.detection_threshold_max_sigma,
-    #         )
-    #     finally:
-    #         bar.close()
+    #     # 2. Per-segment adaptive detection.
+    #     raw_stars = detect_in_segments(
+    #         self._frame.array,
+    #         segment_labels,
+    #         target_per_segment,
+    #         self._fwhm,
+    #         (-max_roundness, max_roundness),
+    #         threshold_min_sigma=_cfg.detection_threshold_min_sigma,
+    #         threshold_max_sigma=_cfg.detection_threshold_max_sigma,
+    #     )
 
     #     if len(raw_stars) == 0:
     #         msg = "No stars detected in any segment"

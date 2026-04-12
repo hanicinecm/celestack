@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import numpy as np
 
-from celestack.progress import _NoopBar
+from celestack.progress import set_progress_factory
 from celestack.star_detector._detection import (
     binary_search_threshold,
     detect_in_segments,
 )
+
+set_progress_factory(None)
 
 
 def _synthetic_image_with_stars(n_stars: int = 15, seed: int = 42) -> np.ndarray:
@@ -79,14 +81,12 @@ def test_detect_in_segments_combines_results():
     labels[64:, :] = 1
     target = {0: 5, 1: 5}
 
-    bar = _NoopBar()
     result = detect_in_segments(
         image,
         labels,
         target,
         fwhm=3.0,
         roundness_range=(-1.0, 1.0),
-        progress_bar=bar,
         threshold_min_sigma=2.0,
         threshold_max_sigma=15.0,
     )
@@ -100,14 +100,12 @@ def test_detect_in_segments_empty_on_flat_image():
     image = np.full((64, 64), 100.0)
     labels = np.zeros((64, 64), dtype=np.int32)
     target = {0: 10}
-    bar = _NoopBar()
     result = detect_in_segments(
         image,
         labels,
         target,
         fwhm=3.0,
         roundness_range=(-1.0, 1.0),
-        progress_bar=bar,
         threshold_min_sigma=2.0,
         threshold_max_sigma=15.0,
     )
