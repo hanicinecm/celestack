@@ -6,6 +6,18 @@ from dataclasses import dataclass, field
 
 
 @dataclass(frozen=True)
+class AveragingConfig:
+    """Frozen configuration for the :mod:`celestack.averaging` sub-package.
+
+    All fields carry sensible defaults.
+    """
+
+    default_method: str = "sigma_clip"  # default combining method
+    default_band_height: int = 256  # rows per tiled read-band
+    sigma_clip_kappa: float = 3.0  # sigma threshold for sigma-clipped mean
+
+
+@dataclass(frozen=True)
 class StarDetectorConfig:
     """Frozen configuration for :class:`~celestack.star_detector.core.StarDetector`.
 
@@ -37,6 +49,7 @@ class AppConfig:
     """
 
     star_detector: StarDetectorConfig = field(default_factory=StarDetectorConfig)
+    averaging: AveragingConfig = field(default_factory=AveragingConfig)
 
 
 def _load_config() -> AppConfig:

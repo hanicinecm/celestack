@@ -6,6 +6,8 @@ from typing import Protocol
 
 import numpy as np
 
+from celestack.config import CFG
+
 
 class Method(Protocol):
     """Protocol for pixel-combining methods."""
@@ -54,7 +56,7 @@ class SigmaClip:
 
     NAME: str = "sigma_clip"
 
-    def __init__(self, kappa: float = 3.0) -> None:
+    def __init__(self, kappa: float = CFG.averaging.sigma_clip_kappa) -> None:
         self._kappa = kappa
 
     def __call__(self, stack: np.ndarray) -> np.ndarray:

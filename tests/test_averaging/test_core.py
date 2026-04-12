@@ -143,8 +143,8 @@ def test_reference_frame_metadata_inherited(tmp_path: Path) -> None:
     assert result.metadata.lens_model == LENS_MODEL
 
 
-def test_band_height_none_full_image(tmp_path: Path) -> None:
-    """band_height=None processes the entire image at once."""
+def test_band_height_full_image_matches_banded(tmp_path: Path) -> None:
+    """A band_height >= image height produces the same result as banded processing."""
     rng = np.random.default_rng(42)
     frames = []
     for i in range(5):
@@ -152,7 +152,7 @@ def test_band_height_none_full_image(tmp_path: Path) -> None:
         p = write_gray_tiff(tmp_path / f"f_{i}.tif", arr)
         frames.append(Frame(p))
 
-    full = average_frames(frames, method="median", band_height=None)
+    full = average_frames(frames, method="median")
     banded = average_frames(frames, method="median", band_height=7)
     np.testing.assert_array_equal(full.array, banded.array)
 

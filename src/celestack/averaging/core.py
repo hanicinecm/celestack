@@ -5,18 +5,17 @@ from __future__ import annotations
 import numpy as np
 
 from celestack.averaging._methods import get_methods
+from celestack.config import CFG
 from celestack.frame.core import Frame
 from celestack.progress import progress_factory
-
-DEFAULT_BAND_HEIGHT = 256
 
 
 def average_frames(
     frames: list[Frame],
-    method: str = "sigma_clip",
+    method: str = CFG.averaging.default_method,
     *,
     reference_frame: Frame | None = None,
-    band_height: int | None = DEFAULT_BAND_HEIGHT,
+    band_height: int = CFG.averaging.default_band_height,
     description: str = "Averaging",
 ) -> Frame:
     """Average a list of frames into a single detached in-memory frame.
@@ -31,8 +30,8 @@ def average_frames(
             ``"sigma_clip"``.
         reference_frame: Optional frame whose metadata is inherited by
             the output frame. Defaults to the first frame in *frames*.
-        band_height: Number of rows to process per band. When
-            ``None``, the entire array is averaged at once.
+        band_height: Number of rows to process per band. Defaults to
+            :attr:`~celestack.config.AveragingConfig.default_band_height`.
 
     Returns:
         A new detached Frame with the averaged pixel data and metadata
@@ -66,9 +65,6 @@ def average_frames(
             raise ValueError(msg)
 
     height, width = ref.shape[0], ref.shape[1]
-
-    if band_height is None:
-        band_height = height
 
     # float32 is sufficient for uint8 and uint16: both fit exactly within
     # float32's 24-bit mantissa (max uint16 value 65535 << 2^24).
