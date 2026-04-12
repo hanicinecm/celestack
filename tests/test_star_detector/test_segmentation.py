@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 
 from celestack.progress import set_progress_factory
-from celestack.star_detector._segmentation import segment_sky
+from celestack.star_detector._segmentation import segment_adjacency, segment_sky
 
 set_progress_factory(None)
 
@@ -64,3 +64,61 @@ def test_output_dtype_is_int32():
     mask = np.zeros((32, 32), dtype=bool)
     labels = segment_sky(mask, n_segments=2)
     assert labels.dtype == np.int32
+
+
+def test_adjacency_simple_vertical_split():
+    """Two vertically-stacked segments are neighbors."""
+    labels = np.array([[0, 0], [0, 0], [1, 1], [1, 1]], dtype=np.int32)
+    adj = segment_adjacency(labels)
+    assert adj == {0: {1}, 1: {0}}
+
+
+def test_adjacency_ignores_foreground():
+    """Foreground (-1) never appears in the adjacency graph."""
+    labels = np.array([[0, -1, 1], [0, -1, 1]], dtype=np.int32)
+    adj = segment_adjacency(labels)
+    assert -1 not in adj
+    assert all(-1 not in neighbors for neighbors in adj.values())
+    assert adj == {0: set(), 1: set()}
+
+
+def test_adjacency_four_connectivity_only():
+    """Diagonal-only touches are not considered adjacent."""
+    labels = np.array(
+        [
+            [0, 0, 1, 1],
+            [0, 0, 1, 1],
+            [2, 2, 3, 3],
+            [2, 2, 3, 3],
+        ],
+        dtype=np.int32,
+    )
+    adj = segment_adjacency(labels)
+    # 0 touches 1 (right) and 2 (down); 0 does NOT touch 3 (diagonal only).
+    assert adj[0] == {1, 2}
+    assert adj[3] == {1, 2}
+    assert 3 not in adj[0]
+    assert 0 not in adj[3]
+
+
+def test_adjacency_isolated_segment_has_empty_set():
+    """A segment with only foreground neighbors still appears with an empty set."""
+    labels = np.array(
+        [
+            [0, -1, -1],
+            [-1, -1, -1],
+            [-1, -1, 1],
+        ],
+        dtype=np.int32,
+    )
+    adj = segment_adjacency(labels)
+    assert adj == {0: set(), 1: set()}
+
+
+def test_adjacency_symmetric():
+    """Neighbor relationships are symmetric."""
+    labels = segment_sky(np.zeros((40, 40), dtype=bool), n_segments=5)
+    adj = segment_adjacency(labels)
+    for seg, neighbors in adj.items():
+        for nbr in neighbors:
+            assert seg in adj[nbr]

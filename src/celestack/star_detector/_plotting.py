@@ -24,7 +24,7 @@ _MAX_STAR_MARKER = 14
 def _segment_boundary_coords(
     segment_labels: np.ndarray,
     downscale_factor: int,
-) -> tuple[np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Find boundary pixels between segments and scale to full-res.
 
     A pixel is a boundary pixel if any of its 4-connected neighbours
@@ -35,7 +35,8 @@ def _segment_boundary_coords(
         downscale_factor: Scale factor to full-res coordinates.
 
     Returns:
-        ``(x_coords, y_coords)`` in full-resolution pixel space.
+        ``(x_coords, y_coords, seg_ids)`` — boundary pixel coordinates in
+        full-resolution pixel space, plus the segment label owning each pixel.
     """
     h, w = segment_labels.shape
     is_boundary = np.zeros((h, w), dtype=bool)
@@ -60,6 +61,7 @@ def _segment_boundary_coords(
     return (
         cols.astype(np.float64) * downscale_factor,
         rows.astype(np.float64) * downscale_factor,
+        segment_labels[rows, cols],
     )
 
 
@@ -88,7 +90,9 @@ def plot_stars(
     fig = frame.plot()
 
     if show_segments and segment_labels is not None:
-        bx, by = _segment_boundary_coords(segment_labels, frame.downscale_factor)
+        bx, by, seg_ids = _segment_boundary_coords(
+            segment_labels, frame.downscale_factor
+        )
         fig.add_trace(
             go.Scatter(
                 x=bx.tolist(),
@@ -100,7 +104,8 @@ def plot_stars(
                 ),
                 name="Segments",
                 showlegend=True,
-                hoverinfo="skip",
+                hovertext=[f"segment={int(s)}" for s in seg_ids],
+                hoverinfo="text",
             )
         )
 
