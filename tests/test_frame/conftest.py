@@ -5,6 +5,9 @@ from pathlib import Path
 import numpy as np
 import pytest
 import tifffile
+from PIL import Image
+
+from celestack.frame._metadata import CELESTACK_KEY
 from tests.utils import (
     CAMERA_MAKE,
     CAMERA_MODEL,
@@ -14,9 +17,6 @@ from tests.utils import (
     LENS_MODEL,
     write_tiff,
 )
-from PIL import Image
-
-from celestack.frame._constants import CELESTACK_KEY
 
 
 @pytest.fixture()

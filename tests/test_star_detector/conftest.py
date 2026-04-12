@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from celestack.frame._constants import CELESTACK_KEY
+from celestack.frame._metadata import CELESTACK_KEY
 from celestack.frame.core import Frame
 from celestack.mask.core import Mask
 from tests.utils import write_gray_tiff

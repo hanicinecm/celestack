@@ -12,8 +12,8 @@ import tifffile
 
 from celestack.exceptions import DownscaleError
 from celestack.frame._backends import EmptyBackend, get_backends, is_tiff_path
-from celestack.frame._constants import CELESTACK_KEY
 from celestack.frame._image_ops import downscale_by_block_average, to_grayscale
+from celestack.frame._metadata import CELESTACK_KEY
 from celestack.mask._morphology import DEFAULT_NOISE_MAX_SIZE, remove_small_components
 from celestack.mask._plotting import DEFAULT_HIGHLIGHT_NOISE_MAX_SIZE, plot_mask
 

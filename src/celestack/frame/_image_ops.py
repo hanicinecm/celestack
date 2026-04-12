@@ -4,10 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 
-# Pixels in the master dark whose brightness exceeds
-# median + _BAD_PIXEL_THRESHOLD × robust_std are treated as hot pixels and
-# replaced via neighbor interpolation after subtraction.
-BAD_PIXEL_THRESHOLD: float = 30.0
+from celestack.config import CFG
 
 
 def scaled_preview_uint8(array: np.ndarray) -> np.ndarray:
@@ -135,7 +132,7 @@ def build_dark_bad_pixel_mask(dark_array: np.ndarray) -> np.ndarray:
     Computes per-pixel brightness (max across channels for RGB arrays), then
     estimates the noise robustly via the median absolute deviation (MAD) and
     flags pixels whose brightness exceeds
-    ``median + _BAD_PIXEL_THRESHOLD × robust_std``.  A minimum noise floor of
+    ``median + hot_pixel_mad_sigma × robust_std``.  A minimum noise floor of
     1 ADU is applied so the threshold does not collapse to the median when the
     dark frame has no variation among its good pixels.
 
@@ -150,7 +147,7 @@ def build_dark_bad_pixel_mask(dark_array: np.ndarray) -> np.ndarray:
     median = np.median(b)
     mad = np.median(np.abs(b - median))
     robust_std = max(1.4826 * mad, 1.0)
-    return b > median + BAD_PIXEL_THRESHOLD * robust_std
+    return b > median + CFG.frame.hot_pixel_mad_sigma * robust_std
 
 
 def subtract_master_dark(

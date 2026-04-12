@@ -12,7 +12,7 @@ from typing import Any
 import exifread
 import tifffile
 
-from celestack.frame._constants import CELESTACK_KEY
+CELESTACK_KEY = "celestack"  # Key for Celestack metadata in TIFF ImageDescription
 
 
 def as_float(value: Any) -> float | None:

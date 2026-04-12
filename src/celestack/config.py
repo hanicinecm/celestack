@@ -12,9 +12,19 @@ class AveragingConfig:
     All fields carry sensible defaults.
     """
 
-    default_method: str = "sigma_clip"  # default combining method
     default_band_height: int = 256  # rows per tiled read-band
+    default_method: str = "sigma_clip"  # default combining method
     sigma_clip_kappa: float = 3.0  # sigma threshold for sigma-clipped mean
+
+
+@dataclass(frozen=True)
+class FrameConfig:
+    """Frozen configuration for the :mod:`celestack.frame` sub-package.
+
+    All fields carry sensible defaults.
+    """
+
+    hot_pixel_mad_sigma: float = 30.0  # MAD multiplier for hot-pixel detection
 
 
 @dataclass(frozen=True)
@@ -50,6 +60,7 @@ class AppConfig:
 
     star_detector: StarDetectorConfig = field(default_factory=StarDetectorConfig)
     averaging: AveragingConfig = field(default_factory=AveragingConfig)
+    frame: FrameConfig = field(default_factory=FrameConfig)
 
 
 def _load_config() -> AppConfig:

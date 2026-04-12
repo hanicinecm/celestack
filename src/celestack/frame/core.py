@@ -13,7 +13,6 @@ import tifffile
 
 from celestack.exceptions import DownscaleError
 from celestack.frame._backends import Backend, EmptyBackend, get_backends, is_tiff_path
-from celestack.frame._constants import CELESTACK_KEY
 from celestack.frame._image_ops import (
     build_dark_bad_pixel_mask,
     convert_bit_depth,
@@ -23,6 +22,7 @@ from celestack.frame._image_ops import (
     to_grayscale,
 )
 from celestack.frame._metadata import (
+    CELESTACK_KEY,
     ExifMetadata,
     build_tiff_extratags,
     extract_exif_metadata,
