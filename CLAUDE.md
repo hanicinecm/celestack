@@ -24,11 +24,12 @@ Celestack is a Python library for stacking untracked starscape astrophotography 
 
 ## Commands
 
-All commands assume the virtual environment is active (`source .venv/bin/activate`).
+All commands that rely on the virtual environment bening active must be prefixed by `uv run`.
+Examples:
 
-- **Format and lint**: `ruff check --fix && ruff format` (always run on the entire codebase)
-- **Run all tests**: `pytest`
-- **Run a single test**: `pytest tests/test_module.py::test_name`
+- **Format and lint**: `uv run ruff check --fix && uv run ruff format` (always run on the entire codebase)
+- **Run all tests**: `uv run pytest`
+- **Run a single test**: `uv run pytest tests/test_module.py::test_name`
 - **Install a dependency**: `uv add <pkg>` (or `uv add --dev <pkg>` for dev dependencies)
 
 The project uses `uv` for environment management but must remain installable with `pip`.

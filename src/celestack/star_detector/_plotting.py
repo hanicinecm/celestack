@@ -65,8 +65,8 @@ def _segment_boundary_coords(
 
 def plot_stars(
     frame: Frame,
-    stars: pl.DataFrame | None,
     segment_labels: np.ndarray | None,
+    stars: pl.DataFrame | None,
     show_segments: bool,
 ) -> go.Figure:
     """Create a Plotly figure with available detection results overlaid on the frame.
@@ -76,16 +76,33 @@ def plot_stars(
 
     Args:
         frame: Source frame (provides the base image via ``plot()``).
+        segment_labels: Optional 2D segment label array (label-image space).
         stars: Optional DataFrame with ``x0``, ``y0``, ``flux`` columns.
             ``x0`` and ``y0`` are in full-resolution pixel coordinates,
             matching the axes of ``frame.plot()``.  Pass ``None`` to omit.
-        segment_labels: Optional 2D segment label array (label-image space).
         show_segments: Whether to overlay segment boundary lines.
 
     Returns:
         Plotly figure with the frame image and any available overlays.
     """
     fig = frame.plot()
+
+    if show_segments and segment_labels is not None:
+        bx, by = _segment_boundary_coords(segment_labels, frame.downscale_factor)
+        fig.add_trace(
+            go.Scatter(
+                x=bx.tolist(),
+                y=by.tolist(),
+                mode="markers",
+                marker=dict(
+                    color=_SEGMENT_BOUNDARY_COLOR,
+                    size=1,
+                ),
+                name="Segments",
+                showlegend=True,
+                hoverinfo="skip",
+            )
+        )
 
     if stars is not None:
         flux = stars["flux"].to_numpy()
@@ -112,23 +129,6 @@ def plot_stars(
                 showlegend=True,
                 hovertext=[f"flux={f:.0f}" for f in flux] if flux.size > 0 else [],
                 hoverinfo="text",
-            )
-        )
-
-    if show_segments and segment_labels is not None:
-        bx, by = _segment_boundary_coords(segment_labels, frame.downscale_factor)
-        fig.add_trace(
-            go.Scatter(
-                x=bx.tolist(),
-                y=by.tolist(),
-                mode="markers",
-                marker=dict(
-                    color=_SEGMENT_BOUNDARY_COLOR,
-                    size=1,
-                ),
-                name="Segments",
-                showlegend=True,
-                hoverinfo="skip",
             )
         )
 
