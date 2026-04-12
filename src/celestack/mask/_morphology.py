@@ -7,9 +7,6 @@ from typing import cast
 import numpy as np
 from scipy import ndimage
 
-DEFAULT_NOISE_MAX_SIZE = 8
-"""Default maximum component area (in pixels) for noise removal."""
-
 
 def _small_component_metadata(
     mask: np.ndarray,

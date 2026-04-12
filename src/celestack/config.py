@@ -28,6 +28,18 @@ class FrameConfig:
 
 
 @dataclass(frozen=True)
+class MaskConfig:
+    """Frozen configuration for the :mod:`celestack.mask` sub-package.
+
+    All fields carry sensible defaults.
+    """
+
+    default_noise_max_size: int = 8  # max component area for remove_noise
+    default_highlight_noise_max_size: int = 128  # max noise area highlighted in plot
+    plot_target_long_edge: int = 2560  # long-edge pixel target for plot downscaling
+
+
+@dataclass(frozen=True)
 class StarDetectorConfig:
     """Frozen configuration for :class:`~celestack.star_detector.core.StarDetector`.
 
@@ -61,6 +73,7 @@ class AppConfig:
     star_detector: StarDetectorConfig = field(default_factory=StarDetectorConfig)
     averaging: AveragingConfig = field(default_factory=AveragingConfig)
     frame: FrameConfig = field(default_factory=FrameConfig)
+    mask: MaskConfig = field(default_factory=MaskConfig)
 
 
 def _load_config() -> AppConfig:

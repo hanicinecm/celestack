@@ -9,11 +9,9 @@ import numpy as np
 import plotly.graph_objects as go
 from scipy import ndimage
 
+from celestack.config import CFG
 from celestack.frame._plotting import as_png_data_uri
 from celestack.mask._morphology import _small_component_metadata
-
-DEFAULT_HIGHLIGHT_NOISE_MAX_SIZE = 128
-"""Default maximum component area (in pixels) for noise highlighting."""
 
 _FG_NOISE_COLOR = "rgb(0, 0, 255)"
 """Red for foreground noise particles."""
@@ -26,9 +24,6 @@ _MIN_NOISE_MARKER_SIZE = 4
 
 _MAX_NOISE_MARKER_SIZE = 18
 """Maximum Scatter marker size for the largest noise particles."""
-
-_PLOT_TARGET_LONG_EDGE = 2560
-"""Target long-edge size in pixels for downscaling image before plotting."""
 
 
 def _downscale_nearest(array: np.ndarray, target_long_edge: int) -> np.ndarray:
@@ -100,7 +95,7 @@ def plot_clusters(labels: np.ndarray) -> go.Figure:
     n_clusters = int(labels.max()) + 1
     palette = _cluster_palette(n_clusters)
 
-    plot_labels = _downscale_nearest(labels, _PLOT_TARGET_LONG_EDGE)
+    plot_labels = _downscale_nearest(labels, CFG.mask.plot_target_long_edge)
     ph, pw = plot_labels.shape
 
     cluster_image = np.zeros((ph, pw, 3), dtype=np.uint8)

@@ -10,12 +10,13 @@ import numpy as np
 import plotly.graph_objects as go
 import tifffile
 
+from celestack.config import CFG
 from celestack.exceptions import DownscaleError
 from celestack.frame._backends import EmptyBackend, get_backends, is_tiff_path
 from celestack.frame._image_ops import downscale_by_block_average, to_grayscale
 from celestack.frame._metadata import CELESTACK_KEY
-from celestack.mask._morphology import DEFAULT_NOISE_MAX_SIZE, remove_small_components
-from celestack.mask._plotting import DEFAULT_HIGHLIGHT_NOISE_MAX_SIZE, plot_mask
+from celestack.mask._morphology import remove_small_components
+from celestack.mask._plotting import plot_mask
 
 
 class Mask:
@@ -310,7 +311,7 @@ class Mask:
         self.array[pixels[:, 1], pixels[:, 0]] = foreground
         self._detach()
 
-    def remove_noise(self, max_size: int = DEFAULT_NOISE_MAX_SIZE) -> None:
+    def remove_noise(self, max_size: int = CFG.mask.default_noise_max_size) -> None:
         """Remove small connected components from the mask.
 
         Foreground particles with area <= *max_size* are cleared to
@@ -320,8 +321,7 @@ class Mask:
         The mask is detached from its backing path after mutation.
 
         Args:
-            max_size: Maximum particle area in pixels to remove.  Defaults
-                to :data:`~celestack.mask._morphology.DEFAULT_NOISE_MAX_SIZE`.
+            max_size: Maximum particle area in pixels to remove.
 
         Raises:
             ValueError: If *max_size* is less than 1.
@@ -333,7 +333,7 @@ class Mask:
     def plot(
         self,
         *,
-        highlight_noise: int = DEFAULT_HIGHLIGHT_NOISE_MAX_SIZE,
+        highlight_noise: int = CFG.mask.default_highlight_noise_max_size,
     ) -> go.Figure:
         """Visualize the mask as a black-and-white Plotly figure.
 
@@ -348,10 +348,7 @@ class Mask:
 
         Args:
             highlight_noise: Maximum component area (in pixels) to
-                highlight.
-                Defaults to
-                :data:`~celestack.mask._plotting.DEFAULT_HIGHLIGHT_NOISE_MAX_SIZE`.
-                Pass ``0`` to disable highlighting.
+                highlight. Pass ``0`` to disable highlighting.
 
         Returns:
             A Plotly figure with the mask rendered as a static PNG image.

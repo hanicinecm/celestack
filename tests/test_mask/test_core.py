@@ -653,7 +653,7 @@ def test_remove_noise_invalid_max_size_raises() -> None:
 
 
 def test_remove_noise_default_max_size() -> None:
-    """remove_noise defaults to DEFAULT_NOISE_MAX_SIZE (8)."""
+    """remove_noise defaults to the configured noise max size (8)."""
     arr = np.zeros((20, 20), dtype=bool)
     arr[0, 0:8] = True  # 8 pixels — exactly at default threshold
     mask = Mask._from_array(arr)
