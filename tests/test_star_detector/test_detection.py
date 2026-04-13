@@ -31,7 +31,7 @@ def test_binary_search_finds_stars():
     """Binary search on a synthetic image detects a reasonable star count."""
     image = _synthetic_image_with_stars(15)
     mask = np.zeros(image.shape, dtype=bool)
-    threshold, stars = binary_search_threshold(
+    stars = binary_search_threshold(
         image,
         mask,
         fwhm=3.0,
@@ -40,14 +40,14 @@ def test_binary_search_finds_stars():
         threshold_bounds=(10, 200),
     )
     assert len(stars) > 0
-    assert threshold > 0
+    assert stars["threshold"][0] > 0
 
 
 def test_binary_search_target_unreachable():
     """Requesting more stars than exist returns all found without crashing."""
     image = _synthetic_image_with_stars(3)
     mask = np.zeros(image.shape, dtype=bool)
-    _, stars = binary_search_threshold(
+    stars = binary_search_threshold(
         image,
         mask,
         fwhm=3.0,
@@ -62,7 +62,7 @@ def test_binary_search_returns_expected_columns():
     """Result DataFrame has the expected columns."""
     image = _synthetic_image_with_stars(10)
     mask = np.zeros(image.shape, dtype=bool)
-    _, stars = binary_search_threshold(
+    stars = binary_search_threshold(
         image,
         mask,
         fwhm=3.0,
@@ -70,7 +70,7 @@ def test_binary_search_returns_expected_columns():
         roundness_range=(-1.0, 1.0),
         threshold_bounds=(10, 200),
     )
-    assert set(stars.columns) == {"x", "y", "flux", "fwhm", "roundness"}
+    assert set(stars.columns) == {"x", "y", "flux", "fwhm", "roundness", "threshold"}
 
 
 def test_detect_in_segments_combines_results():
@@ -92,7 +92,7 @@ def test_detect_in_segments_combines_results():
     )
     assert len(result) > 0
     assert "segment_id" in result.columns
-    assert "threshold" in result.columns
+    assert "threshold_sigma" in result.columns
 
 
 def test_detect_in_segments_empty_on_flat_image():

@@ -8,17 +8,24 @@ import polars as pl
 
 from celestack.frame.core import Frame
 
-_STAR_COLOR = "rgba(0, 255, 100, 0.7)"
-"""Colour for star markers."""
+_SEGMENT_BOUNDARY_COLOR = "rgba(255, 255, 0, 0.35)"  # segment boundary dots
+_MIN_STAR_MARKER = 3  # scatter marker size for the faintest stars
+_MAX_STAR_MARKER = 14  # scatter marker size for the brightest stars
+_STAR_COLORSCALE = "Viridis"  # flux → colour scale for star markers
 
-_SEGMENT_BOUNDARY_COLOR = "rgba(255, 255, 0, 0.35)"
-"""Colour for segment boundary dots."""
-
-_MIN_STAR_MARKER = 3
-"""Minimum scatter marker size for the faintest stars."""
-
-_MAX_STAR_MARKER = 14
-"""Maximum scatter marker size for the brightest stars."""
+# Columns displayed in the star hover tooltip, in order.  Missing columns
+# are silently skipped so the plot never breaks on partial data.
+_STAR_HOVER_COLS: tuple[tuple[str, str], ...] = (
+    ("star_id", "id=%d"),
+    ("x0", "x0=%.1f"),
+    ("y0", "y0=%.1f"),
+    ("flux", "flux=%.0f"),
+    ("fwhm", "fwhm=%.2f"),
+    ("roundness", "roundness=%.2f"),
+    ("threshold", "threshold=%.1f"),
+    ("threshold_sigma", "threshold_sigma=%.2fσ"),
+    ("segment_id", "segment=%d"),
+)
 
 
 def _segment_boundary_coords(
@@ -119,7 +126,9 @@ def plot_stars(
                 + (_MAX_STAR_MARKER - _MIN_STAR_MARKER) * (flux - flux_min) / flux_range
             )
         else:
-            sizes = np.array([], dtype=np.float64)
+            sizes = np.array([], dtype=np.float32)
+
+        hovertext = _build_star_hover_lines(stars)
 
         fig.add_trace(
             go.Scatter(
@@ -127,14 +136,30 @@ def plot_stars(
                 y=stars["y0"].to_list(),
                 mode="markers",
                 marker=dict(
-                    color=_STAR_COLOR,
+                    color=flux.tolist() if flux.size > 0 else [],
+                    colorscale=_STAR_COLORSCALE,
                     size=sizes.tolist() if sizes.size > 0 else [],
+                    showscale=False,
                 ),
                 name="Stars",
                 showlegend=True,
-                hovertext=[f"flux={f:.0f}" for f in flux] if flux.size > 0 else [],
+                hovertext=hovertext,
                 hoverinfo="text",
             )
         )
 
     return fig
+
+
+def _build_star_hover_lines(stars: pl.DataFrame) -> list[str]:
+    """Assemble per-row hover strings from whichever columns are present."""
+    available = [(col, fmt) for col, fmt in _STAR_HOVER_COLS if col in stars.columns]
+    if not available:
+        return []
+
+    arrays = {col: stars[col].to_list() for col, _ in available}
+    lines: list[str] = []
+    for i in range(len(stars)):
+        parts = [fmt % arrays[col][i] for col, fmt in available]
+        lines.append("<br>".join(parts))
+    return lines

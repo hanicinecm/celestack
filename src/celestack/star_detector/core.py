@@ -202,9 +202,11 @@ class StarDetector:
 
         Returns:
             DataFrame with columns ``star_id, x, y, flux, fwhm, roundness,
-            threshold, x0, y0``.  ``x``, ``y``, and ``fwhm`` are in the
-            frame's own pixel coordinates; ``x0`` and ``y0`` are the
-            full-resolution equivalents.
+            threshold, threshold_sigma, segment_id, x0, y0``.  ``x``, ``y``,
+            and ``fwhm`` are in the frame's own pixel coordinates; ``x0``
+            and ``y0`` are the full-resolution equivalents. ``threshold``
+            is the absolute DAOStarFinder threshold; ``threshold_sigma``
+            is the same value as a multiple of background σ.
 
         Raises:
             StarDetectorError: If :meth:`segment` has not been called yet.
@@ -260,12 +262,14 @@ class StarDetector:
             raise StarDetectorError(msg)
 
         # 4. Assign sequential star_id.
-        filtered = filtered.with_row_index("star_id")
+        filtered = filtered.with_row_index("star_id").with_columns(
+            pl.col("star_id").cast(pl.UInt16)
+        )
 
         # 5. Append full-resolution coordinate columns.
         filtered = filtered.with_columns(
-            (pl.col("x") * dsf).alias("x0"),
-            (pl.col("y") * dsf).alias("y0"),
+            (pl.col("x") * dsf).cast(pl.Float32).alias("x0"),
+            (pl.col("y") * dsf).cast(pl.Float32).alias("y0"),
         )
 
         self._stars = filtered

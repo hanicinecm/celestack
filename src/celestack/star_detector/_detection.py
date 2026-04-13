@@ -21,7 +21,7 @@ def binary_search_threshold(
     target_count: int,
     roundness_range: tuple[float, float],
     threshold_bounds: tuple[float, float],
-) -> tuple[float, pl.DataFrame]:
+) -> pl.DataFrame:
     """Binary-search the detection threshold to yield closest to *target_count* stars.
 
     If the target is unreachable (fewer real stars than requested), returns
@@ -36,18 +36,19 @@ def binary_search_threshold(
         threshold_bounds: (low, high) threshold range.
 
     Returns:
-        ``(optimal_threshold, stars_df)`` where *stars_df* has columns
-        ``x, y, flux, fwhm, roundness``.
+        DataFrame with columns ``x, y, flux, fwhm, roundness, threshold``,
+        where ``threshold`` is the absolute DAOStarFinder threshold that
+        produced this row (constant across all rows of a single call).
     """
     lo, hi = threshold_bounds
-    best_threshold = lo
     best_df = pl.DataFrame(
         schema={
-            "x": pl.Float64,
-            "y": pl.Float64,
-            "flux": pl.Float64,
-            "fwhm": pl.Float64,
-            "roundness": pl.Float64,
+            "x": pl.Float32,
+            "y": pl.Float32,
+            "flux": pl.Float32,
+            "fwhm": pl.Float32,
+            "roundness": pl.Float32,
+            "threshold": pl.Float32,
         }
     )
     best_diff = float("inf")
@@ -71,18 +72,18 @@ def binary_search_threshold(
         count = len(result)
         df = pl.DataFrame(
             {
-                "x": np.array(result["xcentroid"], dtype=np.float64),
-                "y": np.array(result["ycentroid"], dtype=np.float64),
-                "flux": np.array(result["flux"], dtype=np.float64),
-                "fwhm": np.full(count, fwhm, dtype=np.float64),
-                "roundness": np.array(result["roundness1"], dtype=np.float64),
+                "x": np.array(result["xcentroid"], dtype=np.float32),
+                "y": np.array(result["ycentroid"], dtype=np.float32),
+                "flux": np.array(result["flux"], dtype=np.float32),
+                "fwhm": np.full(count, fwhm, dtype=np.float32),
+                "roundness": np.array(result["roundness1"], dtype=np.float32),
+                "threshold": np.full(count, mid, dtype=np.float32),
             }
         )
 
         diff = abs(count - target_count)
         if diff < best_diff:
             best_diff = diff
-            best_threshold = mid
             best_df = df
 
         if count < target_count:
@@ -92,7 +93,7 @@ def binary_search_threshold(
         else:
             break
 
-    return best_threshold, best_df
+    return best_df
 
 
 def detect_in_segments(
@@ -125,8 +126,11 @@ def detect_in_segments(
 
     Returns:
         Combined DataFrame with columns
-        ``x, y, flux, fwhm, roundness, threshold, segment_id``.
-        Coordinates are in the same pixel space as *image*.
+        ``x, y, flux, fwhm, roundness, threshold, threshold_sigma, segment_id``.
+        ``threshold`` is the absolute DAOStarFinder threshold used, and
+        ``threshold_sigma`` is the same value expressed as a multiple of
+        the per-segment background σ.  Coordinates are in the same pixel
+        space as *image*.
     """
     all_frames: list[pl.DataFrame] = []
     float_image = image.astype(np.float64)
@@ -150,7 +154,7 @@ def detect_in_segments(
 
             detection_mask = segment_labels != seg_id
 
-            threshold, stars_df = binary_search_threshold(
+            stars_df = binary_search_threshold(
                 float_image,
                 detection_mask,
                 fwhm,
@@ -161,8 +165,8 @@ def detect_in_segments(
 
             if len(stars_df) > 0:
                 stars_df = stars_df.with_columns(
-                    pl.lit(threshold).alias("threshold"),
-                    pl.lit(seg_id).alias("segment_id"),
+                    (pl.col("threshold") / np.float32(bg_std)).alias("threshold_sigma"),
+                    pl.lit(np.uint16(seg_id)).alias("segment_id"),
                 )
                 all_frames.append(stars_df)
 
@@ -171,13 +175,14 @@ def detect_in_segments(
     if not all_frames:
         return pl.DataFrame(
             schema={
-                "x": pl.Float64,
-                "y": pl.Float64,
-                "flux": pl.Float64,
-                "fwhm": pl.Float64,
-                "roundness": pl.Float64,
-                "threshold": pl.Float64,
-                "segment_id": pl.Int32,
+                "x": pl.Float32,
+                "y": pl.Float32,
+                "flux": pl.Float32,
+                "fwhm": pl.Float32,
+                "roundness": pl.Float32,
+                "threshold": pl.Float32,
+                "threshold_sigma": pl.Float32,
+                "segment_id": pl.UInt16,
             }
         )
 
