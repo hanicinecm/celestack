@@ -8,7 +8,7 @@ import pytest
 from celestack.progress import set_progress_factory
 from celestack.star_detector._segmentation import (
     closest_segment,
-    segment_adjacency,
+    segment_bfs_tree,
     segment_sky,
     spaced_segments,
 )
@@ -72,24 +72,27 @@ def test_output_dtype_is_int32():
     assert labels.dtype == np.int32
 
 
-def test_adjacency_simple_vertical_split():
-    """Two vertically-stacked segments are neighbors."""
+def test_bfs_tree_vertical_split_starts_at_nearest():
+    """BFS tree is seeded by the segment closest to start_point."""
     labels = np.array([[0, 0], [0, 0], [1, 1], [1, 1]], dtype=np.int32)
-    adj = segment_adjacency(labels)
-    assert adj == {0: {1}, 1: {0}}
+    order = segment_bfs_tree(labels, (0.0, 0.0))
+    assert order == [(0, None), (1, 0)]
+
+    order = segment_bfs_tree(labels, (3.0, 0.0))
+    assert order == [(1, None), (0, 1)]
 
 
-def test_adjacency_ignores_foreground():
-    """Foreground (-1) never appears in the adjacency graph."""
+def test_bfs_tree_ignores_foreground():
+    """Foreground (-1) never appears in the BFS output."""
     labels = np.array([[0, -1, 1], [0, -1, 1]], dtype=np.int32)
-    adj = segment_adjacency(labels)
-    assert -1 not in adj
-    assert all(-1 not in neighbors for neighbors in adj.values())
-    assert adj == {0: set(), 1: set()}
+    order = segment_bfs_tree(labels, (0.0, 0.0))
+    seg_ids = [seg for seg, _ in order]
+    assert -1 not in seg_ids
+    assert set(seg_ids) == {0, 1}
 
 
-def test_adjacency_four_connectivity_only():
-    """Diagonal-only touches are not considered adjacent."""
+def test_bfs_tree_four_connectivity_only():
+    """Diagonal-only segments are not adjacent and must be reached via a chain."""
     labels = np.array(
         [
             [0, 0, 1, 1],
@@ -99,16 +102,16 @@ def test_adjacency_four_connectivity_only():
         ],
         dtype=np.int32,
     )
-    adj = segment_adjacency(labels)
-    # 0 touches 1 (right) and 2 (down); 0 does NOT touch 3 (diagonal only).
-    assert adj[0] == {1, 2}
-    assert adj[3] == {1, 2}
-    assert 3 not in adj[0]
-    assert 0 not in adj[3]
+    order = segment_bfs_tree(labels, (0.0, 0.0))
+    parent_of = dict(order)
+    # 0 is the seed (top-left corner).
+    assert parent_of[0] is None
+    # 3 is diagonally opposite to 0, so its parent must be 1 or 2 (not 0).
+    assert parent_of[3] in {1, 2}
 
 
-def test_adjacency_isolated_segment_has_empty_set():
-    """A segment with only foreground neighbors still appears with an empty set."""
+def test_bfs_tree_isolated_segments_still_appear():
+    """Segments unreachable via adjacency are appended at the end with parent=None."""
     labels = np.array(
         [
             [0, -1, -1],
@@ -117,17 +120,29 @@ def test_adjacency_isolated_segment_has_empty_set():
         ],
         dtype=np.int32,
     )
-    adj = segment_adjacency(labels)
-    assert adj == {0: set(), 1: set()}
+    order = segment_bfs_tree(labels, (0.0, 0.0))
+    parent_of = dict(order)
+    assert parent_of == {0: None, 1: None}
+    assert {seg for seg, _ in order} == {0, 1}
 
 
-def test_adjacency_symmetric():
-    """Neighbor relationships are symmetric."""
+def test_bfs_tree_visits_every_sky_segment():
+    """BFS output covers every segment exactly once."""
     labels = segment_sky(np.zeros((40, 40), dtype=bool), n_segments=5)
-    adj = segment_adjacency(labels)
-    for seg, neighbors in adj.items():
-        for nbr in neighbors:
-            assert seg in adj[nbr]
+    order = segment_bfs_tree(labels, (0.0, 0.0))
+    seg_ids = [seg for seg, _ in order]
+    assert len(seg_ids) == len(set(seg_ids)) == 5
+    assert set(seg_ids) == set(range(5))
+
+
+def test_bfs_tree_parent_precedes_child():
+    """Every non-seed segment's parent appears earlier in the BFS order."""
+    labels = segment_sky(np.zeros((40, 40), dtype=bool), n_segments=5)
+    order = segment_bfs_tree(labels, (0.0, 0.0))
+    position = {seg: i for i, (seg, _) in enumerate(order)}
+    for seg, parent in order:
+        if parent is not None:
+            assert position[parent] < position[seg]
 
 
 def test_closest_segment_picks_obvious_winner():

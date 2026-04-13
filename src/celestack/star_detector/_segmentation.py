@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections import defaultdict
+from collections import defaultdict, deque
 
 import numpy as np
 from sklearn.cluster import KMeans
@@ -40,36 +40,81 @@ def segment_sky(
     return labels
 
 
-def segment_adjacency(labels: np.ndarray) -> dict[int, set[int]]:
-    """Build the 4-connected adjacency graph of segments in a label array.
+def segment_bfs_tree(
+    labels: np.ndarray,
+    start_point: tuple[float, float],
+) -> list[tuple[int, int | None]]:
+    """Return segments in BFS order with each segment's parent id.
 
-    Two segments are considered neighbors if any of their pixels share a
-    horizontal or vertical edge.  Foreground pixels (label ``-1``) are
-    ignored and never appear in the graph.  Every segment present in
-    *labels* appears as a key, even if it has no neighbors.
+    The BFS starts at the segment whose centroid is closest to *start_point*
+    (via :func:`closest_segment`) and traverses the 4-connected segment
+    adjacency graph.  Each entry is ``(segment_id, parent_id)`` — the seed
+    segment has ``parent_id=None``, and any segments unreachable from the
+    seed are appended at the end with ``parent_id=None`` (same treatment).
 
     Args:
         labels: 2D int32 label array, as produced by :func:`segment_sky`.
+        start_point: ``(row, col)`` seed for the BFS.
 
     Returns:
-        Mapping from segment id to the set of its neighboring segment ids.
+        List of ``(segment_id, parent_id)`` pairs in BFS visitation order.
+
+    Raises:
+        ValueError: If *labels* contains no sky pixels.
     """
     adjacency: dict[int, set[int]] = defaultdict(set)
-
-    # Ensure every segment is a key, even isolated ones.
+    all_segments: set[int] = set()
     for seg in np.unique(labels):
         if seg >= 0:
             adjacency[int(seg)] = set()
+            all_segments.add(int(seg))
 
-    # Horizontal neighbor pairs.
     left, right = labels[:, :-1], labels[:, 1:]
     _collect_pairs(left, right, adjacency)
-
-    # Vertical neighbor pairs.
     top, bottom = labels[:-1, :], labels[1:, :]
     _collect_pairs(top, bottom, adjacency)
 
-    return dict(adjacency)
+    seed = closest_segment(labels, start_point)
+    parent: dict[int, int | None] = {seed: None}
+    order: list[tuple[int, int | None]] = []
+    queue: deque[int] = deque([seed])
+    while queue:
+        seg = queue.popleft()
+        order.append((seg, parent[seg]))
+        for nb in adjacency[seg]:
+            if nb not in parent:
+                parent[nb] = seg
+                queue.append(nb)
+
+    # Orphans (not reachable via adjacency) fall back to no parent.
+    for seg in all_segments:
+        if seg not in parent:
+            parent[seg] = None
+            order.append((seg, None))
+
+    return order
+
+
+def _collect_pairs(
+    a: np.ndarray,
+    b: np.ndarray,
+    adjacency: dict[int, set[int]],
+) -> None:
+    """Record neighbor pairs between two aligned label slices.
+
+    Pairs where either side is foreground (``-1``) or where both labels are
+    equal are skipped.  Updates *adjacency* in place.
+
+    Args:
+        a: First label slice.
+        b: Second label slice, aligned with *a*.
+        adjacency: Adjacency map to update in place.
+    """
+    differ = (a != b) & (a >= 0) & (b >= 0)
+    pairs = np.unique(np.stack([a[differ], b[differ]], axis=1), axis=0)
+    for seg_a, seg_b in pairs:
+        adjacency[int(seg_a)].add(int(seg_b))
+        adjacency[int(seg_b)].add(int(seg_a))
 
 
 def closest_segment(labels: np.ndarray, point: tuple[float, float]) -> int:
@@ -175,25 +220,3 @@ def spaced_segments(labels: np.ndarray, k: int) -> list[int]:
         min_sq_dist = np.minimum(min_sq_dist, new_sq_dist)
 
     return [int(unique_ids[i]) for i in chosen]
-
-
-def _collect_pairs(
-    a: np.ndarray,
-    b: np.ndarray,
-    adjacency: dict[int, set[int]],
-) -> None:
-    """Record neighbor pairs between two aligned label slices.
-
-    Pairs where either side is foreground (``-1``) or where both labels are
-    equal are skipped.  Updates *adjacency* in place.
-
-    Args:
-        a: First label slice.
-        b: Second label slice, aligned with *a*.
-        adjacency: Adjacency map to update in place.
-    """
-    differ = (a != b) & (a >= 0) & (b >= 0)
-    pairs = np.unique(np.stack([a[differ], b[differ]], axis=1), axis=0)
-    for seg_a, seg_b in pairs:
-        adjacency[int(seg_a)].add(int(seg_b))
-        adjacency[int(seg_b)].add(int(seg_a))

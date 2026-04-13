@@ -15,7 +15,7 @@ from celestack.star_detector._detection import detect_in_segment
 from celestack.star_detector._filtering import filter_stars
 from celestack.star_detector._fwhm import estimate_fwhm
 from celestack.star_detector._plotting import plot_stars as _plot_stars
-from celestack.star_detector._segmentation import segment_sky
+from celestack.star_detector._segmentation import segment_bfs_tree, segment_sky
 
 
 class StarDetector:
@@ -244,18 +244,26 @@ class StarDetector:
         # adaptively with the post-filter shortfall, and on each retry we
         # seed the binary search with the previous threshold as its new
         # upper bound (more stars ⇒ lower threshold).
+        bfs_order = segment_bfs_tree(segment_labels, (0.0, 0.0))
         per_segment: list[pl.DataFrame] = []
+        seg_threshold_sigma: dict[int, float] = {}
         max_refinements = 3
 
         with progress_factory(len(target_per_segment), "Detecting stars") as bar:
-            for seg_id, seg_target in sorted(target_per_segment.items()):
+            for seg_id, parent_id in bfs_order:
+                seg_target = target_per_segment[seg_id]
                 best: pl.DataFrame | None = None
                 raw_target = max(
                     1, int(round(seg_target * cfg.detection_overdetect_factor))
                 )
                 threshold_max_sigma = cfg.detection_threshold_max_sigma
+                initial_sigma = (
+                    seg_threshold_sigma.get(parent_id)
+                    if parent_id is not None
+                    else None
+                )
 
-                for _ in range(max_refinements):
+                for i in range(max_refinements):
                     raw = detect_in_segment(
                         image,
                         segment_labels,
@@ -265,6 +273,7 @@ class StarDetector:
                         roundness_range,
                         threshold_min_sigma=cfg.detection_threshold_min_sigma,
                         threshold_max_sigma=threshold_max_sigma,
+                        initial_threshold_sigma=initial_sigma if i == 0 else None,
                     )
                     if len(raw) == 0:
                         break
@@ -293,6 +302,7 @@ class StarDetector:
 
                 if best is not None and len(best) > 0:
                     per_segment.append(best)
+                    seg_threshold_sigma[seg_id] = float(best["threshold_sigma"][0])
                 bar.update()
 
         if not per_segment:
