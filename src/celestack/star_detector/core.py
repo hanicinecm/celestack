@@ -10,6 +10,8 @@ from celestack.config import CFG
 from celestack.exceptions import StarDetectorError
 from celestack.frame.core import Frame
 from celestack.mask.core import Mask
+from celestack.star_detector._detection import detect_in_segments
+from celestack.star_detector._filtering import filter_stars
 from celestack.star_detector._fwhm import estimate_fwhm
 from celestack.star_detector._plotting import plot_stars as _plot_stars
 from celestack.star_detector._segmentation import segment_sky
@@ -178,99 +180,96 @@ class StarDetector:
             threshold_sigma=threshold_sigma,
         )
 
-    # def detect(
-    #     self,
-    #     target_stars: int = _cfg.default_target_stars,
-    #     *,
-    #     max_roundness: float = _cfg.default_max_roundness,
-    #     min_separation: float | None = None,
-    #     edge_margin: int = _cfg.default_edge_margin,
-    # ) -> pl.DataFrame:
-    #     """Run the adaptive detection pipeline on the current segmentation.
+    def detect(
+        self,
+        target_stars: int = CFG.star_detector.default_target_stars,
+        *,
+        max_roundness: float = CFG.star_detector.default_max_roundness,
+        min_separation: float = CFG.star_detector.default_min_separation,
+        edge_margin: int = CFG.star_detector.default_edge_margin,
+    ) -> pl.DataFrame:
+        """Run the adaptive detection pipeline on the current segmentation.
 
-    #     :meth:`segment` must be called first.
+        :meth:`segment` must be called first.
 
-    #     Args:
-    #         target_stars: Desired number of output stars.
-    #         max_roundness: Maximum roundness bounds for DAOStarFinder.
-    #         min_separation: Minimum distance between stars in the frame's own
-    #             pixel coordinates.  Defaults to ``2 * fwhm``.
-    #         edge_margin: Exclusion zone in the frame's own pixel coordinates
-    #             around frame and mask edges.
+        Args:
+            target_stars: Desired number of output stars.
+            max_roundness: Maximum roundness bounds for DAOStarFinder.
+            min_separation: Minimum distance between stars in the full-resolution
+                image pixels.
+            edge_margin: Exclusion zone in the full-resolution image pixels around
+                frame and mask edges.
 
-    #     Returns:
-    #         DataFrame with columns ``star_id, x, y, flux, fwhm, roundness,
-    #         threshold, x0, y0``.  ``x``, ``y``, and ``fwhm`` are in the
-    #         frame's own pixel coordinates; ``x0`` and ``y0`` are the
-    #         full-resolution equivalents.
+        Returns:
+            DataFrame with columns ``star_id, x, y, flux, fwhm, roundness,
+            threshold, x0, y0``.  ``x``, ``y``, and ``fwhm`` are in the
+            frame's own pixel coordinates; ``x0`` and ``y0`` are the
+            full-resolution equivalents.
 
-    #     Raises:
-    #         StarDetectorError: If :meth:`segment` has not been called yet.
-    #         ValueError: If *target_stars* < 1.
-    #         StarDetectorError: If no stars survive filtering.
-    #     """
-    #     if self._segment_labels is None:
-    #         msg = "segment() must be called before detect()"
-    #         raise StarDetectorError(msg)
-    #     if target_stars < 1:
-    #         msg = "target_stars must be at least 1"
-    #         raise ValueError(msg)
+        Raises:
+            StarDetectorError: If :meth:`segment` has not been called yet.
+            ValueError: If *target_stars* < 1.
+            StarDetectorError: If no stars survive filtering.
+        """
+        if self._segment_labels is None:
+            msg = "segment() must be called before detect()"
+            raise StarDetectorError(msg)
+        if target_stars < 1:
+            msg = "target_stars must be at least 1"
+            raise ValueError(msg)
 
-    #     if min_separation is None:
-    #         min_separation = _cfg.min_separation_fwhm_multiplier * self.fwhm
+        dsf = self._frame.downscale_factor
+        segment_labels = self._segment_labels
 
-    #     dsf = self._frame.downscale_factor
-    #     segment_labels = self._segment_labels
+        # 1. Compute per-segment target counts (2x proportional share).
+        unique, counts = np.unique(
+            segment_labels[segment_labels >= 0], return_counts=True
+        )
+        total_sky = int(counts.sum())
+        target_per_segment = {
+            int(seg): max(1, int(2 * target_stars * c / total_sky))
+            for seg, c in zip(unique, counts, strict=True)
+        }
 
-    #     # 1. Compute per-segment target counts (2x proportional share).
-    #     unique, counts = np.unique(
-    #         segment_labels[segment_labels >= 0], return_counts=True
-    #     )
-    #     total_sky = int(counts.sum())
-    #     target_per_segment = {
-    #         int(seg): max(1, int(2 * target_stars * c / total_sky))
-    #         for seg, c in zip(unique, counts, strict=True)
-    #     }
+        # 2. Per-segment adaptive detection.
+        raw_stars = detect_in_segments(
+            self._frame.array,
+            segment_labels,
+            target_per_segment,
+            self.fwhm,
+            (-max_roundness, max_roundness),
+            threshold_min_sigma=CFG.star_detector.detection_threshold_min_sigma,
+            threshold_max_sigma=CFG.star_detector.detection_threshold_max_sigma,
+        )
 
-    #     # 2. Per-segment adaptive detection.
-    #     raw_stars = detect_in_segments(
-    #         self._frame.array,
-    #         segment_labels,
-    #         target_per_segment,
-    #         self._fwhm,
-    #         (-max_roundness, max_roundness),
-    #         threshold_min_sigma=_cfg.detection_threshold_min_sigma,
-    #         threshold_max_sigma=_cfg.detection_threshold_max_sigma,
-    #     )
+        if len(raw_stars) == 0:
+            msg = "No stars detected in any segment"
+            raise StarDetectorError(msg)
 
-    #     if len(raw_stars) == 0:
-    #         msg = "No stars detected in any segment"
-    #         raise StarDetectorError(msg)
+        # 3. Filter (all coordinates remain in the frame's own pixel space).
+        filtered = filter_stars(
+            raw_stars,
+            self._mask.array,
+            target_stars,
+            min_separation / dsf,
+            edge_margin // dsf,
+        )
 
-    #     # 3. Filter (all coordinates remain in the frame's own pixel space).
-    #     filtered = filter_stars(
-    #         raw_stars,
-    #         self._mask.array,
-    #         target_stars,
-    #         min_separation,
-    #         edge_margin,
-    #     )
+        if len(filtered) == 0:
+            msg = "No stars survived filtering"
+            raise StarDetectorError(msg)
 
-    #     if len(filtered) == 0:
-    #         msg = "No stars survived filtering"
-    #         raise StarDetectorError(msg)
+        # 4. Assign sequential star_id.
+        filtered = filtered.with_row_index("star_id")
 
-    #     # 4. Assign sequential star_id.
-    #     filtered = filtered.with_row_index("star_id")
+        # 5. Append full-resolution coordinate columns.
+        filtered = filtered.with_columns(
+            (pl.col("x") * dsf).alias("x0"),
+            (pl.col("y") * dsf).alias("y0"),
+        )
 
-    #     # 5. Append full-resolution coordinate columns.
-    #     filtered = filtered.with_columns(
-    #         (pl.col("x") * dsf).alias("x0"),
-    #         (pl.col("y") * dsf).alias("y0"),
-    #     )
-
-    #     self._stars = filtered
-    #     return filtered
+        self._stars = filtered
+        return filtered
 
     def plot(self, *, show_segments: bool = False) -> go.Figure:
         """Visualize available detection results overlaid on the frame.
