@@ -10,6 +10,7 @@ from photutils.detection import DAOStarFinder
 from photutils.utils.exceptions import NoDetectionsWarning
 
 from celestack.exceptions import StarDetectorError
+from celestack.star_detector._photometry import compute_local_flux
 
 _MAX_ITERATIONS = 15  # Maximum binary-search depth for detection threshold tuning
 
@@ -176,9 +177,17 @@ def detect_in_segment(
         initial_threshold=initial_threshold,
     )
 
+    flux_local = compute_local_flux(
+        image,
+        stars_df["x"].to_numpy(),
+        stars_df["y"].to_numpy(),
+        fwhm,
+    )
+
     return stars_df.with_columns(
         (pl.col("threshold") / pl.lit(float(bg_std)))
         .cast(pl.Float32)
         .alias("threshold_sigma"),
         pl.lit(np.uint16(seg_id)).alias("segment_id"),
+        pl.Series("flux_local", flux_local, dtype=pl.Float32),
     )

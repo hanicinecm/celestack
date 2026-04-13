@@ -72,6 +72,28 @@ def test_binary_search_returns_expected_columns():
     assert set(stars.columns) == {"x", "y", "flux", "fwhm", "roundness", "threshold"}
 
 
+def test_detect_in_segment_includes_flux_local():
+    """detect_in_segment adds a background-subtracted flux_local column."""
+    image = _synthetic_image_with_stars(20)
+    labels = np.zeros((128, 128), dtype=np.int32)
+
+    result = detect_in_segment(
+        image,
+        labels,
+        seg_id=0,
+        target_count=5,
+        fwhm=3.0,
+        roundness_range=(-1.0, 1.0),
+        threshold_min_sigma=2.0,
+        threshold_max_sigma=15.0,
+    )
+    assert "flux_local" in result.columns
+    # Local flux should be strictly less than the raw aperture-ish flux
+    # because the ~100-count background has been subtracted.
+    assert (result["flux_local"] < result["flux"] * 1000).all()
+    assert (result["flux_local"] > 0).all()
+
+
 def test_binary_search_respects_initial_threshold():
     """The initial_threshold seed is used as the first midpoint."""
     image = _synthetic_image_with_stars(15)

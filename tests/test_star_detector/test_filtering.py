@@ -10,12 +10,12 @@ from celestack.star_detector._filtering import filter_stars
 
 
 def _star_df(rows: list[tuple[float, float, float]]) -> pl.DataFrame:
-    """Build a minimal star DataFrame from (x, y, flux) tuples."""
+    """Build a minimal star DataFrame from (x, y, flux_local) tuples."""
     return pl.DataFrame(
         {
             "x": [r[0] for r in rows],
             "y": [r[1] for r in rows],
-            "flux": [r[2] for r in rows],
+            "flux_local": [r[2] for r in rows],
         }
     )
 
@@ -39,7 +39,7 @@ def test_proximity_filter_removes_faint_duplicate(simple_mask: np.ndarray):
         edge_margin=1,
     )
     assert len(result) == 1
-    assert result["flux"][0] == 100.0
+    assert result["flux_local"][0] == 100.0
 
 
 def test_edge_margin_removes_near_frame_edge(simple_mask: np.ndarray):
@@ -53,7 +53,7 @@ def test_edge_margin_removes_near_frame_edge(simple_mask: np.ndarray):
         edge_margin=5,
     )
     assert len(result) == 1
-    assert result["flux"][0] == 80.0
+    assert result["flux_local"][0] == 80.0
 
 
 def test_mask_boundary_exclusion(simple_mask: np.ndarray):
@@ -68,7 +68,7 @@ def test_mask_boundary_exclusion(simple_mask: np.ndarray):
         edge_margin=5,
     )
     assert len(result) == 1
-    assert result["flux"][0] == 80.0
+    assert result["flux_local"][0] == 80.0
 
 
 def test_cap_keeps_brightest(simple_mask: np.ndarray):
@@ -83,13 +83,13 @@ def test_cap_keeps_brightest(simple_mask: np.ndarray):
         edge_margin=1,
     )
     assert len(result) == 5
-    fluxes = result["flux"].to_list()
+    fluxes = result["flux_local"].to_list()
     assert fluxes == sorted(fluxes, reverse=True)
 
 
 def test_empty_input_returns_empty(simple_mask: np.ndarray):
     """Empty input DataFrame returns empty output."""
-    stars = pl.DataFrame({"x": [], "y": [], "flux": []})
+    stars = pl.DataFrame({"x": [], "y": [], "flux_local": []})
     result = filter_stars(
         stars,
         simple_mask,

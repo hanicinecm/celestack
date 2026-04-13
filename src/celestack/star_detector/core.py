@@ -202,8 +202,11 @@ class StarDetector:
                 frame and mask edges.
 
         Returns:
-            DataFrame with columns ``star_id, x, y, flux, fwhm, roundness,
-            threshold, threshold_sigma, segment_id, x0, y0``.  ``x``, ``y``,
+            DataFrame with columns ``star_id, x, y, flux, flux_local, fwhm,
+            roundness, threshold, threshold_sigma, segment_id, x0, y0``.
+            ``flux`` is the raw DAOStarFinder flux; ``flux_local`` is the
+            aperture sum with a local sky annulus subtracted and is the
+            column used to rank stars.  ``x``, ``y``,
             and ``fwhm`` are in the frame's own pixel coordinates; ``x0``
             and ``y0`` are the full-resolution equivalents. ``threshold``
             is the absolute DAOStarFinder threshold; ``threshold_sigma``
@@ -309,7 +312,7 @@ class StarDetector:
             msg = "No stars survived filtering in any segment"
             raise StarDetectorError(msg)
 
-        filtered = pl.concat(per_segment)
+        filtered = pl.concat(per_segment).sort("flux_local", descending=True)
 
         # 3. Assign sequential star_id and full-resolution coordinates.
         filtered = filtered.with_row_index("star_id").with_columns(

@@ -62,8 +62,8 @@ class StarDetectorConfig:
     default_n_segments: int = 40  # sky segments for segment()
     default_target_stars: int = 1000  # target star count for detect()
     default_max_roundness: float = 1.7  # DAOStarFinder bounds
-    default_edge_margin: int = 10  # edges exclusion zone in full-res pixels
-    default_min_separation: int = 10  # min separation in full-res pixels
+    default_edge_margin: int = 20  # edges exclusion zone in full-res pixels
+    default_min_separation: int = 20  # min separation in full-res pixels
 
 
 @dataclass(frozen=True)

@@ -20,6 +20,7 @@ _STAR_HOVER_COLS: tuple[tuple[str, str], ...] = (
     ("x0", "x0=%.1f"),
     ("y0", "y0=%.1f"),
     ("flux", "flux=%.0f"),
+    ("flux_local", "flux_local=%.0f"),
     ("fwhm", "fwhm=%.2f"),
     ("roundness", "roundness=%.2f"),
     ("threshold", "threshold=%.1f"),
@@ -86,7 +87,7 @@ def plot_stars(
     Args:
         frame: Source frame (provides the base image via ``plot()``).
         segment_labels: Optional 2D segment label array (label-image space).
-        stars: Optional DataFrame with ``x0``, ``y0``, ``flux`` columns.
+        stars: Optional DataFrame with ``x0``, ``y0``, ``flux_local`` columns.
             ``x0`` and ``y0`` are in full-resolution pixel coordinates,
             matching the axes of ``frame.plot()``.  Pass ``None`` to omit.
         show_segments: Whether to overlay segment boundary lines.
@@ -117,7 +118,7 @@ def plot_stars(
         )
 
     if stars is not None:
-        flux = stars["flux"].to_numpy()
+        flux = stars["flux_local"].to_numpy()
         if flux.size > 0:
             flux_min, flux_max = float(flux.min()), float(flux.max())
             flux_range = flux_max - flux_min if flux_max > flux_min else 1.0

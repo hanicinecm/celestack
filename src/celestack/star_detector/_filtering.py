@@ -24,14 +24,14 @@ def filter_stars(
     3. Cap to *target_stars* brightest.
 
     Args:
-        stars: DataFrame with ``x``, ``y``, ``flux`` columns.
+        stars: DataFrame with ``x``, ``y``, ``flux_local`` columns.
         sky_mask: 2D boolean mask (``True`` = foreground).
         target_stars: Maximum number of stars to keep.
         min_separation: Minimum distance in pixels between stars.
         edge_margin: Exclusion zone in pixels around frame and mask edges.
 
     Returns:
-        Filtered DataFrame, sorted by descending flux.
+        Filtered DataFrame, sorted by descending local flux.
     """
     if len(stars) == 0:
         return stars
@@ -75,7 +75,7 @@ def filter_stars(
         return stars
 
     # --- 2. Proximity filter (greedy, brightest-first) ---
-    stars = stars.sort("flux", descending=True)
+    stars = stars.sort("flux_local", descending=True)
     xs = stars["x"].to_numpy()
     ys = stars["y"].to_numpy()
 
@@ -97,6 +97,6 @@ def filter_stars(
     stars = stars.filter(pl.Series(accepted))
 
     # --- 3. Cap ---
-    stars = stars.sort("flux", descending=True).head(target_stars)
+    stars = stars.sort("flux_local", descending=True).head(target_stars)
 
     return stars
