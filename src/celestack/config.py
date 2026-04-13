@@ -55,6 +55,9 @@ class StarDetectorConfig:
     detection_threshold_min_sigma: float = 1.0  # lower bound as N * bg σ
     detection_threshold_max_sigma: float = 10.0  # upper bound as N * bg σ
 
+    # per-segment detect→filter refinement loop
+    detection_overdetect_factor: float = 2.0  # initial over-detection multiplier
+
     # StarDetector method defaults
     default_n_segments: int = 40  # sky segments for segment()
     default_target_stars: int = 1000  # target star count for detect()

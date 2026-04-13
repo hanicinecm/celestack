@@ -10,7 +10,8 @@ from celestack.config import CFG
 from celestack.exceptions import StarDetectorError
 from celestack.frame.core import Frame
 from celestack.mask.core import Mask
-from celestack.star_detector._detection import detect_in_segments
+from celestack.progress import progress_factory
+from celestack.star_detector._detection import detect_in_segment
 from celestack.star_detector._filtering import filter_stars
 from celestack.star_detector._fwhm import estimate_fwhm
 from celestack.star_detector._plotting import plot_stars as _plot_stars
@@ -222,51 +223,88 @@ class StarDetector:
 
         dsf = self._frame.downscale_factor
         segment_labels = self._segment_labels
+        image = self._frame.array
+        sky_mask = self._mask.array
+        roundness_range = (-max_roundness, max_roundness)
+        cfg = CFG.star_detector
+        min_sep_px = min_separation / dsf
+        edge_margin_px = edge_margin // dsf
 
-        # 1. Compute per-segment target counts (2x proportional share).
+        # 1. Per-segment proportional targets.
         unique, counts = np.unique(
             segment_labels[segment_labels >= 0], return_counts=True
         )
         total_sky = int(counts.sum())
         target_per_segment = {
-            int(seg): max(1, int(2 * target_stars * c / total_sky))
+            int(seg): max(1, int(round(target_stars * c / total_sky)))
             for seg, c in zip(unique, counts, strict=True)
         }
 
-        # 2. Per-segment adaptive detection.
-        raw_stars = detect_in_segments(
-            self._frame.array,
-            segment_labels,
-            target_per_segment,
-            self.fwhm,
-            (-max_roundness, max_roundness),
-            threshold_min_sigma=CFG.star_detector.detection_threshold_min_sigma,
-            threshold_max_sigma=CFG.star_detector.detection_threshold_max_sigma,
-        )
+        # 2. Per-segment detect → filter loop.  The raw-star request grows
+        # adaptively with the post-filter shortfall, and on each retry we
+        # seed the binary search with the previous threshold as its new
+        # upper bound (more stars ⇒ lower threshold).
+        per_segment: list[pl.DataFrame] = []
+        max_refinements = 3
 
-        if len(raw_stars) == 0:
-            msg = "No stars detected in any segment"
+        with progress_factory(len(target_per_segment), "Detecting stars") as bar:
+            for seg_id, seg_target in sorted(target_per_segment.items()):
+                best: pl.DataFrame | None = None
+                raw_target = max(
+                    1, int(round(seg_target * cfg.detection_overdetect_factor))
+                )
+                threshold_max_sigma = cfg.detection_threshold_max_sigma
+
+                for _ in range(max_refinements):
+                    raw = detect_in_segment(
+                        image,
+                        segment_labels,
+                        seg_id,
+                        raw_target,
+                        self.fwhm,
+                        roundness_range,
+                        threshold_min_sigma=cfg.detection_threshold_min_sigma,
+                        threshold_max_sigma=threshold_max_sigma,
+                    )
+                    if len(raw) == 0:
+                        break
+
+                    filtered_seg = filter_stars(
+                        raw, sky_mask, seg_target, min_sep_px, edge_margin_px
+                    )
+
+                    if best is None or len(filtered_seg) > len(best):
+                        best = filtered_seg
+                    if len(filtered_seg) >= seg_target or len(raw) < raw_target:
+                        # Either we hit the target, or the segment is
+                        # detection-limited (can't produce more raw stars
+                        # even if we ask) — no point retrying.
+                        break
+
+                    # Grow the raw request by double the observed shortfall
+                    # — enough slack to absorb another round of filtering
+                    # without blindly doubling when we're already close.
+                    shortfall = seg_target - len(filtered_seg)
+                    raw_target += max(1, 2 * shortfall)
+                    # Narrow the threshold search: we need more stars next
+                    # time, so the new upper bound is the threshold that
+                    # just produced too few.
+                    threshold_max_sigma = float(raw["threshold_sigma"][0])
+
+                if best is not None and len(best) > 0:
+                    per_segment.append(best)
+                bar.update()
+
+        if not per_segment:
+            msg = "No stars survived filtering in any segment"
             raise StarDetectorError(msg)
 
-        # 3. Filter (all coordinates remain in the frame's own pixel space).
-        filtered = filter_stars(
-            raw_stars,
-            self._mask.array,
-            target_stars,
-            min_separation / dsf,
-            edge_margin // dsf,
-        )
+        filtered = pl.concat(per_segment)
 
-        if len(filtered) == 0:
-            msg = "No stars survived filtering"
-            raise StarDetectorError(msg)
-
-        # 4. Assign sequential star_id.
+        # 3. Assign sequential star_id and full-resolution coordinates.
         filtered = filtered.with_row_index("star_id").with_columns(
             pl.col("star_id").cast(pl.UInt16)
         )
-
-        # 5. Append full-resolution coordinate columns.
         filtered = filtered.with_columns(
             (pl.col("x") * dsf).cast(pl.Float32).alias("x0"),
             (pl.col("y") * dsf).cast(pl.Float32).alias("y0"),
