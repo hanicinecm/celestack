@@ -6,7 +6,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-from celestack.star_detector._filtering import filter_stars
+from celestack.star_detector._detection import filter_stars
 
 
 def _star_df(rows: list[tuple[float, float, float]]) -> pl.DataFrame:

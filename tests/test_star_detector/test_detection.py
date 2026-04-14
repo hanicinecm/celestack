@@ -9,6 +9,7 @@ from celestack.exceptions import StarDetectorError
 from celestack.star_detector._detection import (
     _binary_search_threshold,
     detect_in_segment,
+    detect_in_segment_adaptive,
 )
 
 
@@ -190,3 +191,76 @@ def test_detect_in_segment_raises_on_zero_background_spread():
             threshold_min_sigma=2.0,
             threshold_max_sigma=15.0,
         )
+
+
+def test_adaptive_returns_filtered_segment_frame():
+    """Adaptive helper returns a filtered DataFrame with the expected columns."""
+    image = _synthetic_image_with_stars(20)
+    labels = np.zeros((128, 128), dtype=np.int32)
+    sky_mask = np.zeros((128, 128), dtype=bool)
+
+    result = detect_in_segment_adaptive(
+        image,
+        labels,
+        seg_id=0,
+        sky_mask=sky_mask,
+        seg_target=5,
+        fwhm=3.0,
+        roundness_range=(-1.0, 1.0),
+        min_separation=1.0,
+        edge_margin=2,
+        threshold_min_sigma=2.0,
+        threshold_max_sigma=15.0,
+        overdetect_factor=2.0,
+    )
+    assert result is not None
+    assert "flux_local" in result.columns
+    assert "threshold_sigma" in result.columns
+    assert len(result) <= 5
+
+
+def test_adaptive_returns_none_when_threshold_too_high():
+    """When no detections are possible within the threshold bounds, returns None."""
+    image = _synthetic_image_with_stars(5)
+    labels = np.zeros((128, 128), dtype=np.int32)
+    sky_mask = np.zeros((128, 128), dtype=bool)
+
+    result = detect_in_segment_adaptive(
+        image,
+        labels,
+        seg_id=0,
+        sky_mask=sky_mask,
+        seg_target=5,
+        fwhm=3.0,
+        roundness_range=(-1.0, 1.0),
+        min_separation=1.0,
+        edge_margin=2,
+        threshold_min_sigma=1000.0,
+        threshold_max_sigma=2000.0,
+        overdetect_factor=2.0,
+    )
+    assert result is None
+
+
+def test_adaptive_accepts_initial_threshold_seed():
+    """Passing initial_threshold_sigma does not break the refinement loop."""
+    image = _synthetic_image_with_stars(20)
+    labels = np.zeros((128, 128), dtype=np.int32)
+    sky_mask = np.zeros((128, 128), dtype=bool)
+
+    result = detect_in_segment_adaptive(
+        image,
+        labels,
+        seg_id=0,
+        sky_mask=sky_mask,
+        seg_target=8,
+        fwhm=3.0,
+        roundness_range=(-1.0, 1.0),
+        min_separation=1.0,
+        edge_margin=2,
+        threshold_min_sigma=2.0,
+        threshold_max_sigma=15.0,
+        overdetect_factor=2.0,
+        initial_threshold_sigma=5.0,
+    )
+    assert result is not None

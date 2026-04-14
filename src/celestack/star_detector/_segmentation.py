@@ -40,6 +40,33 @@ def segment_sky(
     return labels
 
 
+def proportional_targets(
+    segment_labels: np.ndarray,
+    total_target: int,
+) -> dict[int, int]:
+    """Distribute *total_target* across segments proportionally to their size.
+
+    Each segment receives a share of the total proportional to its sky-pixel
+    count, rounded to the nearest integer and floored at 1 so no segment is
+    skipped.  Because of rounding, the sum of the returned values is only
+    approximately equal to *total_target*.
+
+    Args:
+        segment_labels: 2D int32 array (sky pixels 0..N-1, foreground -1).
+        total_target: Desired total across all segments.
+
+    Returns:
+        Mapping ``{segment_id: target_count}`` for every sky segment present
+        in *segment_labels*.
+    """
+    unique, counts = np.unique(segment_labels[segment_labels >= 0], return_counts=True)
+    total_sky = int(counts.sum())
+    return {
+        int(seg): max(1, int(round(total_target * c / total_sky)))
+        for seg, c in zip(unique, counts, strict=True)
+    }
+
+
 def segment_bfs_tree(
     labels: np.ndarray,
     start_point: tuple[float, float],

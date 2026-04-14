@@ -8,6 +8,7 @@ import pytest
 from celestack.progress import set_progress_factory
 from celestack.star_detector._segmentation import (
     closest_segment,
+    proportional_targets,
     segment_bfs_tree,
     segment_sky,
     spaced_segments,
@@ -264,3 +265,32 @@ def test_spaced_segments_spread_beats_arbitrary():
     greedy_spread = _min_pairwise(chosen)
     naive_spread = _min_pairwise(list(range(k)))
     assert greedy_spread >= naive_spread
+
+
+def test_proportional_targets_distributes_by_segment_size():
+    """Larger segments receive larger targets, proportional to their pixel count."""
+    labels = np.zeros((10, 10), dtype=np.int32)
+    labels[:, :2] = 1  # 20 pixels
+    # remaining 80 pixels are segment 0
+    targets = proportional_targets(labels, total_target=100)
+    assert targets[0] == 80
+    assert targets[1] == 20
+
+
+def test_proportional_targets_floors_at_one():
+    """Every segment receives at least 1 even when its share rounds to 0."""
+    labels = np.zeros((10, 10), dtype=np.int32)
+    labels[0, 0] = 1  # 1 pixel out of 100
+    targets = proportional_targets(labels, total_target=5)
+    assert targets[1] >= 1
+    assert set(targets) == {0, 1}
+
+
+def test_proportional_targets_ignores_foreground():
+    """Foreground pixels (-1) do not appear as keys and do not dilute totals."""
+    labels = np.full((10, 10), -1, dtype=np.int32)
+    labels[:5, :] = 0
+    labels[5:, :] = 1
+    targets = proportional_targets(labels, total_target=10)
+    assert set(targets) == {0, 1}
+    assert targets[0] == targets[1] == 5

@@ -11,11 +11,14 @@ from celestack.exceptions import StarDetectorError
 from celestack.frame.core import Frame
 from celestack.mask.core import Mask
 from celestack.progress import progress_factory
-from celestack.star_detector._detection import detect_in_segment
-from celestack.star_detector._filtering import filter_stars
+from celestack.star_detector._detection import detect_in_segment_adaptive
 from celestack.star_detector._fwhm import estimate_fwhm
 from celestack.star_detector._plotting import plot_stars as _plot_stars
-from celestack.star_detector._segmentation import segment_bfs_tree, segment_sky
+from celestack.star_detector._segmentation import (
+    proportional_targets,
+    segment_bfs_tree,
+    segment_sky,
+)
 
 
 class StarDetector:
@@ -188,10 +191,12 @@ class StarDetector:
         max_roundness: float = CFG.star_detector.default_max_roundness,
         min_separation: float = CFG.star_detector.default_min_separation,
         edge_margin: int = CFG.star_detector.default_edge_margin,
+        fwhm: float | None = None,
     ) -> pl.DataFrame:
         """Run the adaptive detection pipeline on the current segmentation.
 
-        :meth:`segment` must be called first.
+        :meth:`segment` must be called first.  If *fwhm* is not supplied,
+        :attr:`fwhm` must have been set by :meth:`estimate_fwhm`.
 
         Args:
             target_stars: Desired number of output stars.
@@ -200,14 +205,19 @@ class StarDetector:
                 image pixels.
             edge_margin: Exclusion zone in the full-resolution image pixels around
                 frame and mask edges.
+            fwhm: Optional FWHM override in the **full-resolution** image
+                pixels.  Converted internally to the frame's own pixel
+                space by dividing by the frame's downscale factor.  When
+                ``None`` (the default), falls back to the previously
+                estimated :attr:`fwhm`.
 
         Returns:
             DataFrame with columns ``star_id, x, y, flux, flux_local, fwhm,
             roundness, threshold, threshold_sigma, segment_id, x0, y0``.
             ``flux`` is the raw DAOStarFinder flux; ``flux_local`` is the
             aperture sum with a local sky annulus subtracted and is the
-            column used to rank stars.  ``x``, ``y``,
-            and ``fwhm`` are in the frame's own pixel coordinates; ``x0``
+            column used to rank stars.  ``x``, ``y``, ``fwhm``, ``flux``,
+            and ``flux_local`` are in the frame's own pixel coordinates; ``x0``
             and ``y0`` are the full-resolution equivalents. ``threshold``
             is the absolute DAOStarFinder threshold; ``threshold_sigma``
             is the same value as a multiple of background σ.
@@ -225,6 +235,7 @@ class StarDetector:
             raise ValueError(msg)
 
         dsf = self._frame.downscale_factor
+        effective_fwhm = fwhm / dsf if fwhm is not None else self.fwhm
         segment_labels = self._segment_labels
         image = self._frame.array
         sky_mask = self._mask.array
@@ -233,77 +244,42 @@ class StarDetector:
         min_sep_px = min_separation / dsf
         edge_margin_px = edge_margin // dsf
 
-        # 1. Per-segment proportional targets.
-        unique, counts = np.unique(
-            segment_labels[segment_labels >= 0], return_counts=True
-        )
-        total_sky = int(counts.sum())
-        target_per_segment = {
-            int(seg): max(1, int(round(target_stars * c / total_sky)))
-            for seg, c in zip(unique, counts, strict=True)
-        }
+        # 1. Per-segment proportional targets, with +1 slack per segment so
+        # the final cap can land on exactly *target_stars* despite rounding
+        # and filter shortfalls.
+        target_per_segment = proportional_targets(segment_labels, target_stars)
+        target_per_segment = {seg: t + 1 for seg, t in target_per_segment.items()}
 
-        # 2. Per-segment detect → filter loop.  The raw-star request grows
-        # adaptively with the post-filter shortfall, and on each retry we
-        # seed the binary search with the previous threshold as its new
-        # upper bound (more stars ⇒ lower threshold).
+        # 2. Per-segment adaptive detect→filter.  BFS over segment adjacency
+        # so each child can seed its binary search with its parent's final
+        # threshold (more stars ⇒ lower threshold).
         bfs_order = segment_bfs_tree(segment_labels, (0.0, 0.0))
         per_segment: list[pl.DataFrame] = []
         seg_threshold_sigma: dict[int, float] = {}
-        max_refinements = 3
 
         with progress_factory(len(target_per_segment), "Detecting stars") as bar:
             for seg_id, parent_id in bfs_order:
-                seg_target = target_per_segment[seg_id]
-                best: pl.DataFrame | None = None
-                raw_target = max(
-                    1, int(round(seg_target * cfg.detection_overdetect_factor))
-                )
-                threshold_max_sigma = cfg.detection_threshold_max_sigma
                 initial_sigma = (
                     seg_threshold_sigma.get(parent_id)
                     if parent_id is not None
                     else None
                 )
-
-                for i in range(max_refinements):
-                    raw = detect_in_segment(
-                        image,
-                        segment_labels,
-                        seg_id,
-                        raw_target,
-                        self.fwhm,
-                        roundness_range,
-                        threshold_min_sigma=cfg.detection_threshold_min_sigma,
-                        threshold_max_sigma=threshold_max_sigma,
-                        initial_threshold_sigma=initial_sigma if i == 0 else None,
-                    )
-                    if len(raw) == 0:
-                        break
-
-                    filtered_seg = filter_stars(
-                        raw, sky_mask, seg_target, min_sep_px, edge_margin_px
-                    )
-
-                    if best is None or len(filtered_seg) > len(best):
-                        best = filtered_seg
-                    if len(filtered_seg) >= seg_target or len(raw) < raw_target:
-                        # Either we hit the target, or the segment is
-                        # detection-limited (can't produce more raw stars
-                        # even if we ask) — no point retrying.
-                        break
-
-                    # Grow the raw request by double the observed shortfall
-                    # — enough slack to absorb another round of filtering
-                    # without blindly doubling when we're already close.
-                    shortfall = seg_target - len(filtered_seg)
-                    raw_target += max(1, 2 * shortfall)
-                    # Narrow the threshold search: we need more stars next
-                    # time, so the new upper bound is the threshold that
-                    # just produced too few.
-                    threshold_max_sigma = float(raw["threshold_sigma"][0])
-
-                if best is not None and len(best) > 0:
+                best = detect_in_segment_adaptive(
+                    image,
+                    segment_labels,
+                    seg_id,
+                    sky_mask,
+                    target_per_segment[seg_id],
+                    effective_fwhm,
+                    roundness_range,
+                    min_separation=min_sep_px,
+                    edge_margin=edge_margin_px,
+                    threshold_min_sigma=cfg.detection_threshold_min_sigma,
+                    threshold_max_sigma=cfg.detection_threshold_max_sigma,
+                    overdetect_factor=cfg.detection_overdetect_factor,
+                    initial_threshold_sigma=initial_sigma,
+                )
+                if best is not None:
                     per_segment.append(best)
                     seg_threshold_sigma[seg_id] = float(best["threshold_sigma"][0])
                 bar.update()
@@ -312,19 +288,23 @@ class StarDetector:
             msg = "No stars survived filtering in any segment"
             raise StarDetectorError(msg)
 
-        filtered = pl.concat(per_segment).sort("flux_local", descending=True)
-
-        # 3. Assign sequential star_id and full-resolution coordinates.
-        filtered = filtered.with_row_index("star_id").with_columns(
+        # 3. Concatenate, sort by local flux, cap at exactly target_stars,
+        # then assign sequential star_id and full-resolution coordinates.
+        stars = (
+            pl.concat(per_segment)
+            .sort("flux_local", descending=True)
+            .head(target_stars)
+        )
+        stars = stars.with_row_index("star_id").with_columns(
             pl.col("star_id").cast(pl.UInt16)
         )
-        filtered = filtered.with_columns(
+        stars = stars.with_columns(
             (pl.col("x") * dsf).cast(pl.Float32).alias("x0"),
             (pl.col("y") * dsf).cast(pl.Float32).alias("y0"),
         )
 
-        self._stars = filtered
-        return filtered
+        self._stars = stars
+        return stars
 
     def plot(self, *, show_segments: bool = False) -> go.Figure:
         """Visualize available detection results overlaid on the frame.
