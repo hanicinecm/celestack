@@ -127,7 +127,7 @@ class StarDetector:
     def segment(
         self,
         n_segments: int = CFG.star_detector.default_n_segments,
-    ) -> None:
+    ) -> np.ndarray:
         """Segment the sky into regions for adaptive per-segment detection.
 
         Must be called before :meth:`detect`.  Can be called repeatedly with
@@ -136,6 +136,9 @@ class StarDetector:
 
         Args:
             n_segments: Number of sky segments (K-Means clusters).
+
+        Returns:
+            The 2D segment label array (same value as :attr:`segment_labels`).
 
         Raises:
             ValueError: If *n_segments* < 1.
@@ -147,6 +150,7 @@ class StarDetector:
         # Run the k-means segmentation:
         self._segment_labels = segment_sky(self._mask.array, n_segments)
         self._stars = None  # prior detections are stale after re-segmentation
+        return self._segment_labels
 
     def estimate_fwhm(
         self,
@@ -154,7 +158,7 @@ class StarDetector:
         range: tuple[float, float] = CFG.star_detector.fwhm_range,
         resolution: int = CFG.star_detector.fwhm_n_steps,
         threshold_sigma: float = CFG.star_detector.fwhm_threshold_sigma,
-    ) -> None:
+    ) -> float:
         """Estimate the FWHM of stars in the frame's own pixels.
 
         Finds the FHWM for the DAOSStarFinder algorithm, which maximizes the
@@ -166,6 +170,10 @@ class StarDetector:
             resolution: Number of FWHM values to sweep within *range*.
             threshold_sigma: Detection threshold as a multiple of the
                 background standard deviation.
+
+        Returns:
+            The estimated FWHM in the frame's own pixels (same value as
+            :attr:`fwhm`).
 
         Warning: The range parameter controling the sweep is in the full-resolution
             image pixels, not the frame's own pixels.  This is to ensure similar
@@ -183,6 +191,7 @@ class StarDetector:
             n_fwhm_steps=resolution,
             threshold_sigma=threshold_sigma,
         )
+        return self._fwhm
 
     def detect(
         self,
