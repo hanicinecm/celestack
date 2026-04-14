@@ -336,10 +336,11 @@ def detect_in_segment_adaptive(
         at all.
     """
     raw_target = max(1, int(round(seg_target * overdetect_factor)))
-    best: pl.DataFrame | None = None
+    kept: pl.DataFrame | None = None
     current_max_sigma = threshold_max_sigma
 
     shortfall_refinement_factor = 3
+    dedup_radius = fwhm
 
     for i in range(max_refinements):
         raw = detect_in_segment(
@@ -356,26 +357,56 @@ def detect_in_segment_adaptive(
         if len(raw) == 0:
             break
 
+        if kept is not None and len(kept) > 0:
+            new_rows = _drop_near_existing(raw, kept, dedup_radius)
+            combined = pl.concat([kept, new_rows]) if len(new_rows) > 0 else kept
+        else:
+            combined = raw
+
         filtered_seg = filter_stars(
-            raw, sky_mask, seg_target, min_separation, edge_margin
+            combined, sky_mask, seg_target, min_separation, edge_margin
         )
 
-        if best is None or len(filtered_seg) > len(best):
-            best = filtered_seg
-        if len(filtered_seg) >= seg_target or len(raw) < raw_target:
-            # Either we hit the target, or the segment is detection-limited
-            # (can't produce more raw stars even if we ask) — no point retrying.
+        prev_count = 0 if kept is None else len(kept)
+        kept = filtered_seg
+
+        if len(kept) >= seg_target or len(raw) < raw_target:
+            # Target reached or the segment is detection-limited (can't
+            # produce more raw stars even at this threshold).
+            break
+        if i > 0 and len(kept) <= prev_count:
+            # Lowering the threshold did not yield any new stars after
+            # filtering — further lowering is unlikely to help.
             break
 
         # Grow the raw request by the observed shortfall multiplied by the
         # refinement factor — hopefully enough slack to absorb another round
         # of filtering.
-        shortfall = seg_target - len(filtered_seg)
+        shortfall = seg_target - len(kept)
         raw_target += max(1, shortfall_refinement_factor * shortfall)
         # Narrow the threshold search: we need more stars next time, so
         # the new upper bound is the threshold that just produced too few.
         current_max_sigma = float(raw["threshold_sigma"][0])
 
-    if best is None or len(best) == 0:
+    if kept is None or len(kept) == 0:
         return None
-    return best
+    return kept
+
+
+def _drop_near_existing(
+    candidates: pl.DataFrame,
+    existing: pl.DataFrame,
+    radius: float,
+) -> pl.DataFrame:
+    """Drop rows from *candidates* within *radius* pixels of any row in *existing*."""
+    if len(candidates) == 0 or len(existing) == 0:
+        return candidates
+    cx = candidates["x"].to_numpy()
+    cy = candidates["y"].to_numpy()
+    ex = existing["x"].to_numpy()
+    ey = existing["y"].to_numpy()
+    dx = cx[:, None] - ex[None, :]
+    dy = cy[:, None] - ey[None, :]
+    min_sq = (dx * dx + dy * dy).min(axis=1)
+    keep = min_sq >= radius * radius
+    return candidates.filter(pl.Series(keep))
