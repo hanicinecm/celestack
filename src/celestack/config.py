@@ -49,14 +49,14 @@ class StarDetectorConfig:
     # fwhm estimation
     fwhm_range: tuple[float, float] = (2.0, 11.0)  # FWHM limits in full-res pixels
     fwhm_n_steps: int = 49  # FWHM candidates evaluated
-    fwhm_threshold_sigma: float = 2.0  # detection threshold as N * bg σ
+    fwhm_threshold_sigma: float = 4.0  # detection threshold as N * bg σ
 
     # detection threshold bounds
     detection_threshold_min_sigma: float = 1.0  # lower bound as N * bg σ
     detection_threshold_max_sigma: float = 10.0  # upper bound as N * bg σ
 
     # per-segment detect→filter refinement loop
-    detection_overdetect_factor: float = 2.0  # initial over-detection multiplier
+    detection_overdetect_factor: float = 1.5  # initial over-detection multiplier
 
     # StarDetector method defaults
     default_n_segments: int = 40  # sky segments for segment()
