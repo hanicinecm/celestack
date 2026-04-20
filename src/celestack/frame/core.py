@@ -11,18 +11,13 @@ import numpy as np
 import plotly.graph_objects as go
 import tifffile
 
-from celestack.exceptions import DownscaleError
 from celestack.frame._backends import Backend, EmptyBackend, get_backends, is_tiff_path
 from celestack.frame._image_ops import (
     build_dark_bad_pixel_mask,
-    convert_bit_depth,
-    downscale_by_block_average,
     interpolate_bad_pixels,
     subtract_master_dark,
-    to_grayscale,
 )
 from celestack.frame._metadata import (
-    CELESTACK_KEY,
     ExifMetadata,
     build_tiff_extratags,
     extract_exif_metadata,
@@ -30,9 +25,12 @@ from celestack.frame._metadata import (
 )
 from celestack.frame._plotting import plot_frame
 
+_SUPPORTED_DTYPES = frozenset({"uint8", "uint16"})
+_DTYPE_TO_BIT_DEPTH = {"uint8": 8, "uint16": 16}
+
 
 class Frame:
-    """Universal image container for Celestack workflow artifacts."""
+    """Universal full-resolution image container."""
 
     def __init__(self, path: str | Path) -> None:
         """Create a frame from an image path.
@@ -42,7 +40,7 @@ class Frame:
 
         Raises:
             FileNotFoundError: If the path does not exist.
-            ValueError: If the image format is unsupported.
+            ValueError: If the image format or dtype is unsupported.
         """
         self._path: Path | None = Path(path)
         self._backend: Backend = EmptyBackend()
@@ -50,15 +48,15 @@ class Frame:
 
         info = self._backend.inspect(self._path)
         self._shape = info.shape
-        self._bit_depth = info.bit_depth
-        if self._bit_depth not in {8, 16}:
-            msg = f"Unsupported bit depth: {self._bit_depth} (supported: 8, 16)"
+        self._dtype = info.dtype
+        if self._dtype not in _SUPPORTED_DTYPES:
+            msg = (
+                f"Unsupported dtype: {self._dtype!r} "
+                f"(supported: {sorted(_SUPPORTED_DTYPES)})"
+            )
             raise ValueError(msg)
 
-        celestack = info.celestack_metadata
-        self._downscale_factor = celestack.downscale_factor
-        self._timestamp_override = celestack.timestamp
-
+        self._timestamp_override: float | None = None
         self._metadata = extract_exif_metadata(self._path)
         self._array_cache: np.ndarray | None = None
 
@@ -91,22 +89,18 @@ class Frame:
 
     def _detached_copy(self) -> Frame:
         """Return a pathless in-memory copy of the frame state."""
-        # Make one-to-one copy:
         frame = type(self).__new__(type(self))
         frame._path = self._path
         frame._backend = self._backend
         frame._shape = self._shape
-        frame._bit_depth = self._bit_depth
-        frame._downscale_factor = self._downscale_factor
+        frame._dtype = self._dtype
         frame._timestamp_override = self._timestamp_override
         frame._metadata = self._metadata
         frame._array_cache = (
             None if self._array_cache is None else self._array_cache.copy()
         )
 
-        # Detach the copy from any backing path:
         frame._detach()
-
         return frame
 
     @property
@@ -127,14 +121,14 @@ class Frame:
         return self._shape
 
     @property
-    def bit_depth(self) -> int:
-        """Return detected source bit depth."""
-        return self._bit_depth
+    def dtype(self) -> str:
+        """Return the pixel dtype as a string (``"uint8"`` or ``"uint16"``)."""
+        return self._dtype
 
     @property
-    def downscale_factor(self) -> int:
-        """Return the proxy downscale factor stored in frame metadata."""
-        return self._downscale_factor
+    def bit_depth(self) -> int:
+        """Return the bit depth derived from :attr:`dtype`."""
+        return _DTYPE_TO_BIT_DEPTH[self._dtype]
 
     @property
     def metadata(self) -> ExifMetadata:
@@ -160,18 +154,18 @@ class Frame:
         Raises:
             ValueError: If the frame has no backing path and no cached array.
             TypeError: If the loaded array dtype does not match the expected
-                dtype for the frame's bit depth.
+                dtype inspected from the backing file.
         """
         if self._array_cache is None:
             if self._path is None:
                 msg = "In-memory frame has no backing path and no cached array"
                 raise ValueError(msg)
             loaded = self._backend.load_array(self._path)
-            expected = np.dtype(f"uint{self._bit_depth}")
+            expected = np.dtype(self._dtype)
             if loaded.dtype != expected:
                 msg = (
                     f"Loaded array dtype {loaded.dtype!r} does not match "
-                    f"expected {expected!r} for bit depth {self._bit_depth}"
+                    f"expected {expected!r}"
                 )
                 raise TypeError(msg)
             self._array_cache = loaded
@@ -204,8 +198,7 @@ class Frame:
         """Write the frame to a TIFF file and bind this instance to that path.
 
         Existing TIFF sources are copied verbatim. Non-TIFF or detached sources
-        are written as strip-layout TIFFs with EXIF metadata preserved. Proxy
-        frames (downscale_factor > 1) have Celestack metadata embedded.
+        are written as strip-layout TIFFs with EXIF metadata preserved.
 
         The array cache is conserved: if the pixel data was not loaded before
         the call, it is unloaded afterwards.
@@ -237,22 +230,11 @@ class Frame:
                 )
                 datetime_value = self._metadata.datetime
 
-                if self._downscale_factor > 1:
-                    celestack_block: dict = {
-                        "downscale_factor": int(self._downscale_factor)
-                    }
-                    if self.timestamp is not None:
-                        celestack_block["timestamp"] = float(self.timestamp)
-                    metadata = {CELESTACK_KEY: celestack_block}
-                else:
-                    metadata = None
-
                 tifffile.imwrite(
                     target,
                     data=array,
                     compression="zlib",
                     photometric=photometric,
-                    metadata=metadata,
                     datetime=str(datetime_value) if datetime_value else None,
                     extratags=build_tiff_extratags(self._metadata),
                 )
@@ -266,8 +248,7 @@ class Frame:
         Self is detached from its backing path after the operation.
 
         Args:
-            master_dark: Master dark frame. Must match shape, dtype, bit
-                depth, and downscale factor.
+            master_dark: Master dark frame. Must match shape and dtype.
 
         Raises:
             ValueError: If the frames are incompatible.
@@ -288,8 +269,7 @@ class Frame:
 
         Args:
             master_dark: Master dark frame used solely for hot-pixel
-                detection. Must match shape, dtype, bit depth, and downscale
-                factor.
+                detection. Must match shape and dtype.
 
         Raises:
             ValueError: If the frames are incompatible.
@@ -302,74 +282,19 @@ class Frame:
         self._detach()
 
     def _validate_similarity(self, other: Frame) -> None:
-        """Validate that two frames can be subtracted safely."""
-        if self.downscale_factor != other.downscale_factor:
-            msg = (
-                "Downscale factor mismatch: left frame has downscale factor "
-                f"{self.downscale_factor}, right frame has downscale factor "
-                f"{other.downscale_factor}"
-            )
-            raise ValueError(msg)
+        """Validate that two frames can be combined safely."""
         if self.shape != other.shape:
             msg = (
                 f"Shape mismatch: left frame has shape {self.shape}, "
                 f"right frame has shape {other.shape}"
             )
             raise ValueError(msg)
-        if self.bit_depth != other.bit_depth:
+        if self.dtype != other.dtype:
             msg = (
-                f"Bit depth mismatch: left frame has bit depth {self.bit_depth}, "
-                f"right frame has bit depth {other.bit_depth}"
+                f"Dtype mismatch: left frame has dtype {self.dtype!r}, "
+                f"right frame has dtype {other.dtype!r}"
             )
             raise ValueError(msg)
-
-    def downscaled_copy(
-        self,
-        downscale_factor: int,
-        bit_depth: int = 8,
-        *,
-        grayscale: bool = True,
-    ) -> Frame:
-        """Return a detached downscaled copy of this frame.
-
-        The result is held in memory. Call :meth:`save_as` on the returned
-        frame to persist it to disk.
-
-        The array cache is conserved: if the pixel data was not loaded before
-        the call, it is unloaded afterwards.
-
-        Args:
-            downscale_factor: Integer linear downscale factor (>= 1).
-            bit_depth: Target output bit depth.
-            grayscale: Whether to convert RGB input to grayscale.
-
-        Returns:
-            A new detached Frame with the downscaled pixel data.
-
-        Raises:
-            DownscaleError: If called on a frame that is already downscaled.
-            ValueError: If *downscale_factor* is less than 1.
-        """
-        if self.downscale_factor != 1:
-            msg = "Cannot downscale a proxy frame"
-            raise DownscaleError(msg)
-        if downscale_factor < 1:
-            msg = "downscale_factor must be >= 1"
-            raise ValueError(msg)
-
-        with self._conserve_cache():
-            working = self.array
-            if grayscale:
-                working = to_grayscale(working)
-            downscaled = downscale_by_block_average(working, downscale_factor)
-            converted = convert_bit_depth(downscaled, self.bit_depth, bit_depth)
-
-        result = self._detached_copy()
-        result._array_cache = converted
-        result._shape = tuple(int(v) for v in converted.shape)
-        result._bit_depth = bit_depth
-        result._downscale_factor = downscale_factor
-        return result
 
     def read_tile(
         self,
@@ -423,14 +348,13 @@ class Frame:
             show_pixels: Whether to plot with pixel hover data.
 
         Returns:
-            A figure with axes in full-resolution pixel coordinates.
+            A figure with axes in the frame's pixel coordinates.
         """
         with self._conserve_cache():
             figure = plot_frame(
                 self.array,
                 title=self._path.name if self._path is not None else "<detached>",
                 bit_depth=self.bit_depth,
-                downscale_factor=self.downscale_factor,
                 show_pixels=show_pixels,
             )
         return figure
@@ -438,4 +362,4 @@ class Frame:
     def __repr__(self) -> str:
         """Return a concise debug representation of the frame."""
         path_str = str(self._path) if self._path is not None else "<detached>"
-        return f"Frame({path_str!r}, downscale_factor={self.downscale_factor})"
+        return f"Frame({path_str!r}, dtype={self._dtype!r})"

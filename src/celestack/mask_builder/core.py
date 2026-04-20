@@ -9,14 +9,14 @@ import plotly.graph_objects as go
 
 from celestack.exceptions import MaskError
 from celestack.frame.core import Frame
-from celestack.mask._clustering import (
+from celestack.mask.core import Mask
+from celestack.mask_builder._clustering import (
     ClusterWeights,
     extract_features,
     relabel_by_descending_y,
     run_kmeans,
 )
-from celestack.mask._plotting import plot_clusters as _plot_clusters
-from celestack.mask.core import Mask
+from celestack.mask_builder._plotting import plot_clusters as _plot_clusters
 
 
 class MaskBuilder:

@@ -11,7 +11,6 @@ from photutils.utils.exceptions import NoDetectionsWarning
 from scipy import ndimage
 
 from celestack.exceptions import StarDetectorError
-from celestack.star_detector._photometry import compute_local_flux
 
 _MAX_ITERATIONS = 15  # Maximum binary-search depth for detection threshold tuning
 
@@ -178,19 +177,11 @@ def detect_in_segment(
         initial_threshold=initial_threshold,
     )
 
-    flux_local = compute_local_flux(
-        image,
-        stars_df["x"].to_numpy(),
-        stars_df["y"].to_numpy(),
-        fwhm,
-    )
-
     return stars_df.with_columns(
         (pl.col("threshold") / pl.lit(float(bg_std)))
         .cast(pl.Float32)
         .alias("threshold_sigma"),
         pl.lit(np.uint16(seg_id)).alias("segment_id"),
-        pl.Series("flux_local", flux_local, dtype=pl.Float32),
     )
 
 
@@ -211,7 +202,7 @@ def filter_stars(
     3. Cap to *target_stars* brightest.
 
     Args:
-        stars: DataFrame with ``x``, ``y``, ``flux_local`` columns.
+        stars: DataFrame with ``x``, ``y``, ``flux`` columns.
         sky_mask: 2D boolean mask (``True`` = foreground).
         target_stars: Maximum number of stars to keep.
         min_separation: Minimum distance in pixels between stars.
@@ -262,7 +253,7 @@ def filter_stars(
         return stars
 
     # --- 2. Proximity filter (greedy, brightest-first) ---
-    stars = stars.sort("flux_local", descending=True)
+    stars = stars.sort("flux", descending=True)
     xs = stars["x"].to_numpy()
     ys = stars["y"].to_numpy()
 
@@ -284,7 +275,7 @@ def filter_stars(
     stars = stars.filter(pl.Series(accepted))
 
     # --- 3. Cap ---
-    stars = stars.sort("flux_local", descending=True).head(target_stars)
+    stars = stars.sort("flux", descending=True).head(target_stars)
 
     return stars
 

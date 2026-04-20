@@ -110,11 +110,11 @@ def test_non_tiled_input_works(tmp_path: Path) -> None:
     assert result.array.shape == (24, 32)
 
 
-def test_bit_depth_mismatch_raises(tmp_path: Path) -> None:
-    """Frames with different bit depths raise ValueError."""
+def test_dtype_mismatch_raises(tmp_path: Path) -> None:
+    """Frames with different dtypes raise ValueError."""
     a = write_gray_tiff(tmp_path / "a.tif", np.zeros((24, 32), dtype=np.uint16))
     b = write_gray_tiff(tmp_path / "b.tif", np.zeros((24, 32), dtype=np.uint8))
-    with pytest.raises(ValueError, match=r"Bit depth mismatch: Frame\("):
+    with pytest.raises(ValueError, match=r"Dtype mismatch: Frame\("):
         average_frames([Frame(a), Frame(b)])
 
 

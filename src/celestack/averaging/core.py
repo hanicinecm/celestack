@@ -58,17 +58,15 @@ def average_frames(
         if f.shape != ref.shape:
             msg = f"Shape mismatch: {f!r} has shape {f.shape}, expected {ref.shape}"
             raise ValueError(msg)
-        if f.bit_depth != ref.bit_depth:
-            msg = (
-                f"Bit depth mismatch: {f!r} has {f.bit_depth}, expected {ref.bit_depth}"
-            )
+        if f.dtype != ref.dtype:
+            msg = f"Dtype mismatch: {f!r} has {f.dtype}, expected {ref.dtype}"
             raise ValueError(msg)
 
     height, width = ref.shape[0], ref.shape[1]
 
     # float32 is sufficient for uint8 and uint16: both fit exactly within
     # float32's 24-bit mantissa (max uint16 value 65535 << 2^24).
-    input_dtype = np.dtype(f"uint{ref.bit_depth}")
+    input_dtype = np.dtype(ref.dtype)
     float_dtype = np.float32
 
     n_bands = (height + band_height - 1) // band_height
@@ -76,8 +74,10 @@ def average_frames(
     with progress_factory(n_bands, description) as bar:
         for y_start in range(0, height, band_height):
             y_end = min(y_start + band_height, height)
+            # TODO: unload array! Turned off for debugging.
             band_slices = [
-                f.read_tile(0, y_start, width, y_end, unload_array=True) for f in frames
+                f.read_tile(0, y_start, width, y_end, unload_array=False)
+                for f in frames
             ]
             stack = np.stack(band_slices, axis=0).astype(float_dtype)
             result_bands.append(combine(stack).astype(input_dtype))

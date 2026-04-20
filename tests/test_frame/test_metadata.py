@@ -1,16 +1,11 @@
 """Tests for frame metadata parsing and serialization."""
 
-from typing import cast
-
-import numpy as np
 import pytest
-import tifffile
 
 from celestack.frame._metadata import (
     ExifMetadata,
     as_float,
     build_tiff_extratags,
-    parse_celestack_metadata,
     parse_datetime_to_epoch,
     to_rational,
 )
@@ -73,37 +68,6 @@ def test_to_rational_round_trip() -> None:
         num, den = to_rational(value)
         recovered = num / den
         assert recovered == pytest.approx(value, rel=1e-6)
-
-
-# --- parse_celestack_metadata ---
-
-
-def test_parse_celestack_metadata_flat_json(tmp_path) -> None:
-    """Flat JSON (backward compat) is parsed correctly."""
-    meta = {"downscale_factor": 2, "timestamp": 12345.0}
-    path = tmp_path / "flat.tif"
-    arr = np.zeros((4, 4), dtype=np.uint8)
-    tifffile.imwrite(path, arr, metadata=meta)
-
-    with tifffile.TiffFile(path) as tif:
-        page = cast(tifffile.TiffPage, tif.pages[0])
-        result = parse_celestack_metadata(page)
-    assert result.downscale_factor == 2
-    assert result.timestamp == pytest.approx(12345.0)
-
-
-def test_parse_celestack_metadata_invalid_json(tmp_path) -> None:
-    """Invalid JSON in ImageDescription returns defaults."""
-    path = tmp_path / "bad.tif"
-    arr = np.zeros((4, 4), dtype=np.uint8)
-    tifffile.imwrite(path, arr)
-
-    # Overwrite ImageDescription with invalid JSON
-    with tifffile.TiffFile(path) as tif:
-        page = cast(tifffile.TiffPage, tif.pages[0])
-        result = parse_celestack_metadata(page)
-    assert result.downscale_factor == 1
-    assert result.timestamp is None
 
 
 # --- build_tiff_extratags ---

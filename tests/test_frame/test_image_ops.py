@@ -6,44 +6,10 @@ import pytest
 from celestack.frame._image_ops import (
     build_dark_bad_pixel_mask,
     convert_bit_depth,
-    downscale_by_block_average,
     scaled_preview_uint8,
     subtract_master_dark,
     to_grayscale,
 )
-
-# --- downscale_by_block_average ---
-
-
-def test_downscale_factor_one_returns_copy() -> None:
-    """Factor=1 returns a copy of the input array."""
-    arr = np.arange(12, dtype=np.uint16).reshape(3, 4)
-    result = downscale_by_block_average(arr, 1)
-    np.testing.assert_array_equal(result, arr)
-    assert result is not arr
-
-
-def test_downscale_factor_below_one_raises() -> None:
-    """Factor < 1 raises ValueError."""
-    arr = np.zeros((4, 4), dtype=np.uint8)
-    with pytest.raises(ValueError, match="downscale_factor must be >= 1"):
-        downscale_by_block_average(arr, 0)
-
-
-def test_downscale_trims_non_divisible() -> None:
-    """Non-divisible dimensions are trimmed before averaging."""
-    # 5x7 with factor=2 → trims to 4x6 → output 2x3
-    arr = np.ones((5, 7), dtype=np.float64)
-    result = downscale_by_block_average(arr, 2)
-    assert result.shape == (2, 3)
-
-
-def test_downscale_3d_preserves_channels() -> None:
-    """Block averaging on 3D array preserves the channel dimension."""
-    arr = np.ones((8, 8, 3), dtype=np.uint16)
-    result = downscale_by_block_average(arr, 2)
-    assert result.shape == (4, 4, 3)
-
 
 # --- to_grayscale ---
 

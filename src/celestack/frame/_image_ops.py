@@ -51,30 +51,6 @@ def convert_bit_depth(
     return np.clip(np.rint(scaled), 0, max_target).astype(out_dtype)
 
 
-def downscale_by_block_average(array: np.ndarray, factor: int) -> np.ndarray:
-    """Downscale an image by averaging non-overlapping pixel blocks."""
-    if factor == 1:
-        return array.copy()
-    if factor < 1:
-        msg = "downscale_factor must be >= 1"
-        raise ValueError(msg)
-
-    height, width = array.shape[:2]
-    new_height = max(1, height // factor)
-    new_width = max(1, width // factor)
-    trim_height = new_height * factor
-    trim_width = new_width * factor
-    trimmed = array[:trim_height, :trim_width]
-
-    if array.ndim == 2:
-        reshaped = trimmed.reshape(new_height, factor, new_width, factor)
-        return reshaped.mean(axis=(1, 3))
-
-    channels = array.shape[2]
-    reshaped = trimmed.reshape(new_height, factor, new_width, factor, channels)
-    return reshaped.mean(axis=(1, 3))
-
-
 def to_grayscale(array: np.ndarray) -> np.ndarray:
     """Convert an RGB array to luminance grayscale."""
     if array.ndim != 3:
@@ -86,7 +62,12 @@ def to_grayscale(array: np.ndarray) -> np.ndarray:
 
 
 def interpolate_bad_pixels(array: np.ndarray, mask: np.ndarray) -> np.ndarray:
-    """Replace masked pixels with the median of their valid 8-connected neighbors.
+    """Replace masked pixels with the mean of their valid 8-connected neighbors.
+
+    Uses the mean rather than the median to preserve channel correlation in
+    RGB images — per-channel median selects values from different neighbor
+    pixels, producing a synthetic color that introduces a systematic bias
+    visible after frame averaging.
 
     Operates only on the small set of masked pixel coordinates rather than
     rolling the full image array, so cost scales with the number of bad pixels,
@@ -97,7 +78,7 @@ def interpolate_bad_pixels(array: np.ndarray, mask: np.ndarray) -> np.ndarray:
         mask: Boolean 2D mask; True where a pixel is bad.
 
     Returns:
-        A copy of *array* with masked pixels replaced by neighbor medians.
+        A copy of *array* with masked pixels replaced by neighbor means.
         Pixels with no valid neighbors are set to zero.
     """
     result = array.copy()
@@ -116,8 +97,8 @@ def interpolate_bad_pixels(array: np.ndarray, mask: np.ndarray) -> np.ndarray:
             if 0 <= y + dy < h and 0 <= x + dx < w and not mask[y + dy, x + dx]
         ]
         if neighbour_vals:
-            median = np.median(neighbour_vals, axis=0)
-            result[y, x] = np.clip(np.rint(median), limits.min, limits.max).astype(
+            mean = np.mean(neighbour_vals, axis=0)
+            result[y, x] = np.clip(np.rint(mean), limits.min, limits.max).astype(
                 array.dtype
             )
         else:

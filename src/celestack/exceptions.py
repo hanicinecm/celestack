@@ -5,10 +5,6 @@ class CelestackError(Exception):
     """Base exception for celestack."""
 
 
-class DownscaleError(CelestackError):
-    """Raised when a frame cannot be downscaled."""
-
-
 class TileReadError(CelestackError):
     """Raised when tile-reading is unavailable for a frame."""
 
@@ -19,3 +15,7 @@ class MaskError(CelestackError):
 
 class StarDetectorError(CelestackError):
     """Raised when star detection fails."""
+
+
+class ProxyMetadataError(CelestackError):
+    """Raised when a proxy sidecar metadata file is missing or malformed."""

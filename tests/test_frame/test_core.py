@@ -6,7 +6,6 @@ import numpy as np
 import plotly.graph_objects as go
 import pytest
 
-from celestack.exceptions import DownscaleError
 from celestack.frame import Frame
 from tests.utils import (
     CAMERA_MAKE,
@@ -17,14 +16,12 @@ from tests.utils import (
     LENS_MODEL,
 )
 
-# --- Constructor + metadata ---
-
 
 def test_load_rgb_tiff(tmp_rgb_tiff: Path) -> None:
     """Load an RGB TIFF and verify basic properties."""
     frame = Frame(tmp_rgb_tiff)
     assert frame.path == tmp_rgb_tiff
-    assert frame.downscale_factor == 1
+    assert frame.dtype == "uint16"
     assert frame.bit_depth == 16
     assert frame.metadata.camera_make == CAMERA_MAKE
     assert frame.metadata.camera_model == CAMERA_MODEL
@@ -34,16 +31,9 @@ def test_load_jpeg(tmp_rgb_jpeg: Path) -> None:
     """Load a JPEG and verify basic properties."""
     frame = Frame(tmp_rgb_jpeg)
     assert frame.path == tmp_rgb_jpeg
-    assert frame.downscale_factor == 1
+    assert frame.dtype == "uint8"
     assert frame.bit_depth == 8
     assert frame.metadata.camera_model == CAMERA_MODEL
-
-
-def test_load_celestack_tiff(tmp_celestack_tiff: Path) -> None:
-    """Load a Celestack proxy TIFF and verify embedded metadata."""
-    frame = Frame(tmp_celestack_tiff)
-    assert frame.downscale_factor == 4
-    assert frame.timestamp == pytest.approx(1752620400.0)
 
 
 def test_timestamp_from_exif(tmp_rgb_tiff: Path) -> None:
@@ -53,7 +43,7 @@ def test_timestamp_from_exif(tmp_rgb_tiff: Path) -> None:
 
 
 def test_no_metadata_timestamp_is_none(tmp_no_metadata_tiff: Path) -> None:
-    """TIFF without EXIF and no Celestack metadata has None timestamp."""
+    """TIFF without EXIF has None timestamp."""
     frame = Frame(tmp_no_metadata_tiff)
     assert frame.timestamp is None
 
@@ -84,33 +74,14 @@ def test_file_not_found_raises(tmp_path: Path) -> None:
         Frame(tmp_path / "nonexistent.tif")
 
 
-def test_external_file_downscale_factor_is_1(
-    tmp_rgb_tiff: Path, tmp_rgb_jpeg: Path
-) -> None:
-    """External TIFF and JPEG always have downscale_factor=1."""
-    assert Frame(tmp_rgb_tiff).downscale_factor == 1
-    assert Frame(tmp_rgb_jpeg).downscale_factor == 1
-
-
-def test_unsupported_bit_depth_raises(tmp_path: Path) -> None:
-    """Frame raises ValueError for images with unsupported bit depth."""
+def test_unsupported_dtype_raises(tmp_path: Path) -> None:
+    """Frame raises ValueError for images with unsupported dtype."""
     import tifffile
 
     path = tmp_path / "deep.tif"
     tifffile.imwrite(path, np.zeros((4, 4), dtype=np.uint32))
-    with pytest.raises(ValueError, match="Unsupported bit depth"):
+    with pytest.raises(ValueError, match="Unsupported dtype"):
         Frame(path)
-
-
-def test_path_raises_for_detached_frame(tmp_rgb_tiff: Path) -> None:
-    """path property raises AttributeError for a detached (in-memory) frame."""
-    frame = Frame(tmp_rgb_tiff)
-    detached = frame.downscaled_copy(1)
-    with pytest.raises(AttributeError, match="not backed by a file"):
-        _ = detached.path
-
-
-# --- Timestamp property ---
 
 
 def test_timestamp_setter_overrides_exif(tmp_rgb_tiff: Path) -> None:
@@ -136,13 +107,6 @@ def test_timestamp_getter_converts_exif_to_float(tmp_rgb_tiff: Path) -> None:
     assert ts == pytest.approx(EXIF_DATETIME_EPOCH)
 
 
-def test_celestack_timestamp_overrides_exif(tmp_celestack_tiff: Path) -> None:
-    """Celestack metadata timestamp takes precedence over EXIF."""
-    frame = Frame(tmp_celestack_tiff)
-    # Even if EXIF were present, the Celestack override wins
-    assert frame.timestamp == pytest.approx(1752620400.0)
-
-
 def test_timestamp_reset_to_none(tmp_rgb_tiff: Path) -> None:
     """Resetting override to None falls through to EXIF timestamp."""
     frame = Frame(tmp_rgb_tiff)
@@ -151,9 +115,6 @@ def test_timestamp_reset_to_none(tmp_rgb_tiff: Path) -> None:
     assert frame.timestamp == pytest.approx(999.0)
     frame.timestamp = None
     assert frame.timestamp == pytest.approx(original_ts)
-
-
-# --- Lazy loading ---
 
 
 def test_array_not_loaded_on_init(tmp_rgb_tiff: Path) -> None:
@@ -196,9 +157,6 @@ def test_array_reloads_after_unload(tmp_rgb_tiff: Path) -> None:
     frame.unload()
     second = frame.array
     np.testing.assert_array_equal(first, second)
-
-
-# --- save_as ---
 
 
 def test_save_as_binds_frame_to_path(tmp_rgb_tiff: Path, tmp_path: Path) -> None:
@@ -253,17 +211,6 @@ def test_save_as_preserves_all_exif_fields(tmp_rgb_jpeg: Path, tmp_path: Path) -
     assert reloaded.metadata.iso is not None
     assert reloaded.metadata.focal_length is not None
     assert reloaded.metadata.lens_model == LENS_MODEL
-
-
-def test_save_as_does_not_embed_celestack_metadata(
-    tmp_rgb_tiff: Path, tmp_path: Path
-) -> None:
-    """Saving a full-res frame produces no Celestack metadata."""
-    frame = Frame(tmp_rgb_tiff)
-    dest = tmp_path / "fullres.tif"
-    frame.save_as(dest)
-    reloaded = Frame(dest)
-    assert reloaded.downscale_factor == 1
 
 
 def test_save_as_copies_tiled_tiff(tmp_tiled_tiff: Path, tmp_path: Path) -> None:
@@ -334,33 +281,6 @@ def test_save_as_updates_backend_for_jpeg_source(
     assert isinstance(frame._backend, tiff_backend_type)
 
 
-def test_save_as_embeds_celestack_metadata_for_proxy(
-    tmp_rgb_tiff: Path, tmp_path: Path
-) -> None:
-    """Saving a proxy (downscale_factor > 1) embeds Celestack metadata."""
-    proxy = Frame(tmp_rgb_tiff).downscaled_copy(4)
-    dest = tmp_path / "proxy.tif"
-    proxy.save_as(dest)
-    reloaded = Frame(dest)
-    assert reloaded.downscale_factor == 4
-
-
-def test_save_as_proxy_without_timestamp_omits_timestamp(
-    tmp_no_metadata_tiff: Path, tmp_path: Path
-) -> None:
-    """Proxy saved without a timestamp has None timestamp after reload."""
-    proxy = Frame(tmp_no_metadata_tiff).downscaled_copy(2)
-    assert proxy.timestamp is None
-    dest = tmp_path / "proxy.tif"
-    proxy.save_as(dest)
-    reloaded = Frame(dest)
-    assert reloaded.timestamp is None
-    assert reloaded.downscale_factor == 2
-
-
-# --- Subtraction ---
-
-
 def test_subtract_dark_modifies_self(tmp_path: Path) -> None:
     """subtract_dark() subtracts into self in place and returns None."""
     from tests.utils import write_gray_tiff
@@ -389,7 +309,7 @@ def test_subtract_dark_hot_pixel_clamps_to_zero(tmp_path: Path) -> None:
 
     light_arr = np.full((3, 3), 1000, dtype=np.uint16)
     dark_arr = np.full((3, 3), 100, dtype=np.uint16)
-    dark_arr[1, 1] = 20000  # hot pixel exceeds light value
+    dark_arr[1, 1] = 20000
 
     light = Frame(write_gray_tiff(tmp_path / "light.tif", light_arr))
     dark = Frame(write_gray_tiff(tmp_path / "dark.tif", dark_arr))
@@ -397,7 +317,7 @@ def test_subtract_dark_hot_pixel_clamps_to_zero(tmp_path: Path) -> None:
     light.subtract_dark(dark)
 
     assert light.array[0, 0] == 900
-    assert light.array[1, 1] == 0  # clamped, not interpolated
+    assert light.array[1, 1] == 0
 
 
 def test_subtract_dark_detaches_from_path(tmp_path: Path) -> None:
@@ -481,32 +401,8 @@ def test_subtract_dark_shape_mismatch_raises(tmp_path: Path) -> None:
         Frame(light_path).subtract_dark(Frame(dark_path))
 
 
-def test_subtract_dark_downscale_factor_mismatch_raises(
-    tmp_rgb_tiff: Path, tmp_path: Path
-) -> None:
-    """Frames with different downscale factors cannot be subtracted."""
-    from tests.utils import write_rgb_tiff
-
-    other_path = write_rgb_tiff(
-        tmp_path / "other.tif",
-        np.zeros((IMG_H, IMG_W, 3), dtype=np.uint16),
-    )
-    light = Frame(tmp_rgb_tiff).downscaled_copy(2)
-    light_dest = tmp_path / "light_proxy.tif"
-    light.save_as(light_dest)
-
-    right = Frame(other_path)
-    right.timestamp = 1.0
-    dark_proxy = right.downscaled_copy(4)
-    dark_dest = tmp_path / "dark_proxy.tif"
-    dark_proxy.save_as(dark_dest)
-
-    with pytest.raises(ValueError, match="Downscale factor mismatch"):
-        Frame(light_dest).subtract_dark(Frame(dark_dest))
-
-
-def test_subtract_dark_bit_depth_mismatch_raises(tmp_path: Path) -> None:
-    """Frames with different bit depths cannot be subtracted."""
+def test_subtract_dark_dtype_mismatch_raises(tmp_path: Path) -> None:
+    """Frames with different dtypes cannot be subtracted."""
     from tests.utils import write_gray_tiff
 
     light_path = write_gray_tiff(
@@ -517,7 +413,7 @@ def test_subtract_dark_bit_depth_mismatch_raises(tmp_path: Path) -> None:
         tmp_path / "dark.tif",
         np.zeros((10, 10), dtype=np.uint8),
     )
-    with pytest.raises(ValueError, match="Bit depth mismatch"):
+    with pytest.raises(ValueError, match="Dtype mismatch"):
         Frame(light_path).subtract_dark(Frame(dark_path))
 
 
@@ -537,7 +433,6 @@ def test_subtract_dark_conserves_master_dark_cache(tmp_path: Path) -> None:
     light.subtract_dark(dark)
     assert dark._array_cache is None
 
-    # If master dark was already loaded, it stays loaded.
     light2 = Frame(light_path)
     _ = dark.array
     assert dark._array_cache is not None
@@ -545,24 +440,21 @@ def test_subtract_dark_conserves_master_dark_cache(tmp_path: Path) -> None:
     assert dark._array_cache is not None
 
 
-# --- interpolate_bad_pixels ---
-
-
 def test_interpolate_bad_pixels_hot_pixel_replaced(tmp_path: Path) -> None:
-    """Hot dark pixels are replaced by 8-neighbor median in the light frame."""
+    """Hot dark pixels are replaced by 8-neighbor mean in the light frame."""
     from tests.utils import write_gray_tiff
 
     light_arr = np.full((3, 3), 1000, dtype=np.uint16)
     dark_arr = np.full((3, 3), 100, dtype=np.uint16)
-    dark_arr[1, 1] = 20000  # hot pixel, well above MAD threshold
+    dark_arr[1, 1] = 20000
 
     light = Frame(write_gray_tiff(tmp_path / "light.tif", light_arr))
     dark = Frame(write_gray_tiff(tmp_path / "dark.tif", dark_arr))
 
     light.interpolate_bad_pixels(dark)
 
-    assert light.array[0, 0] == 1000  # untouched
-    assert light.array[1, 1] == 1000  # hot pixel replaced with neighbor median
+    assert light.array[0, 0] == 1000
+    assert light.array[1, 1] == 1000
 
 
 def test_interpolate_bad_pixels_detaches_from_path(tmp_path: Path) -> None:
@@ -631,123 +523,6 @@ def test_interpolate_bad_pixels_conserves_master_dark_cache(tmp_path: Path) -> N
     assert dark._array_cache is not None
 
 
-# --- downscaled_copy ---
-
-
-def test_downscaled_copy_dimensions(tmp_rgb_tiff: Path) -> None:
-    """downscale_factor=2 halves each spatial dimension."""
-    proxy = Frame(tmp_rgb_tiff).downscaled_copy(downscale_factor=2)
-    assert proxy.shape[0] == IMG_H // 2
-    assert proxy.shape[1] == IMG_W // 2
-
-
-def test_downscaled_copy_grayscale(tmp_rgb_tiff: Path) -> None:
-    """RGB input with grayscale=True produces a 2D array."""
-    proxy = Frame(tmp_rgb_tiff).downscaled_copy(downscale_factor=2)
-    assert proxy.array.ndim == 2
-
-
-def test_downscaled_copy_no_grayscale(tmp_rgb_tiff: Path) -> None:
-    """grayscale=False preserves RGB channels."""
-    proxy = Frame(tmp_rgb_tiff).downscaled_copy(downscale_factor=2, grayscale=False)
-    assert proxy.array.ndim == 3
-    assert proxy.array.shape[2] == 3
-
-
-def test_downscaled_copy_bit_depth(tmp_rgb_tiff: Path) -> None:
-    """16-bit input downscaled to 8-bit produces uint8 output."""
-    frame = Frame(tmp_rgb_tiff)
-    assert frame.bit_depth == 16
-    proxy = frame.downscaled_copy(downscale_factor=2, bit_depth=8)
-    assert proxy.bit_depth == 8
-    assert proxy.array.dtype == np.uint8
-
-
-def test_downscaled_copy_sets_downscale_factor(tmp_rgb_tiff: Path) -> None:
-    """Returned frame has downscale_factor matching the requested value."""
-    proxy = Frame(tmp_rgb_tiff).downscaled_copy(downscale_factor=4)
-    assert proxy.downscale_factor == 4
-
-
-def test_downscaled_copy_is_detached(tmp_rgb_tiff: Path) -> None:
-    """downscaled_copy returns an in-memory detached frame."""
-    proxy = Frame(tmp_rgb_tiff).downscaled_copy(downscale_factor=2)
-    assert proxy._path is None
-
-
-def test_downscaled_copy_from_proxy_raises(tmp_rgb_tiff: Path, tmp_path: Path) -> None:
-    """Downscaling an already-downscaled frame raises DownscaleError."""
-    proxy = Frame(tmp_rgb_tiff).downscaled_copy(downscale_factor=2)
-    with pytest.raises(DownscaleError, match="Cannot downscale a proxy"):
-        proxy.downscaled_copy(downscale_factor=2)
-
-
-def test_downscaled_copy_inherits_timestamp(tmp_rgb_tiff: Path) -> None:
-    """Downscaled copy inherits the source timestamp."""
-    frame = Frame(tmp_rgb_tiff)
-    source_ts = frame.timestamp
-    proxy = frame.downscaled_copy(downscale_factor=2)
-    assert proxy.timestamp == pytest.approx(source_ts)
-
-
-def test_downscaled_copy_inherits_none_timestamp(
-    tmp_no_metadata_tiff: Path,
-) -> None:
-    """Downscaled copy inherits None timestamp without raising."""
-    frame = Frame(tmp_no_metadata_tiff)
-    assert frame.timestamp is None
-    proxy = frame.downscaled_copy(downscale_factor=2)
-    assert proxy.timestamp is None
-
-
-def test_downscaled_copy_preserves_exif_metadata(tmp_rgb_jpeg: Path) -> None:
-    """EXIF metadata is inherited by the downscaled copy."""
-    frame = Frame(tmp_rgb_jpeg)
-    proxy = frame.downscaled_copy(downscale_factor=2)
-    assert proxy.metadata.camera_make == CAMERA_MAKE
-    assert proxy.metadata.camera_model == CAMERA_MODEL
-    assert proxy.metadata.datetime is not None
-    assert proxy.metadata.exposure is not None
-    assert proxy.metadata.f_number is not None
-    assert proxy.metadata.iso is not None
-    assert proxy.metadata.focal_length is not None
-    assert proxy.metadata.lens_model == LENS_MODEL
-
-
-def test_downscaled_copy_rejects_factor_below_one(tmp_rgb_tiff: Path) -> None:
-    """downscale_factor < 1 raises ValueError."""
-    with pytest.raises(ValueError, match="downscale_factor must be >= 1"):
-        Frame(tmp_rgb_tiff).downscaled_copy(downscale_factor=0)
-
-
-def test_downscaled_copy_factor_one(tmp_rgb_tiff: Path) -> None:
-    """factor=1 returns a detached copy with no spatial change."""
-    frame = Frame(tmp_rgb_tiff)
-    proxy = frame.downscaled_copy(downscale_factor=1, bit_depth=8)
-    assert proxy.downscale_factor == 1
-    assert proxy.shape[0] == IMG_H
-    assert proxy.shape[1] == IMG_W
-    assert proxy.bit_depth == 8
-
-
-def test_downscaled_copy_to_16bit(tmp_rgb_tiff: Path) -> None:
-    """16-bit input downscaled to 16-bit preserves uint16 dtype."""
-    proxy = Frame(tmp_rgb_tiff).downscaled_copy(downscale_factor=2, bit_depth=16)
-    assert proxy.bit_depth == 16
-    assert proxy.array.dtype == np.uint16
-
-
-def test_downscaled_copy_grayscale_input(tmp_gray_tiff: Path) -> None:
-    """Already-grayscale frame with grayscale=True stays 2D."""
-    frame = Frame(tmp_gray_tiff)
-    frame.timestamp = 1.0
-    proxy = frame.downscaled_copy(downscale_factor=2, grayscale=True)
-    assert proxy.array.ndim == 2
-
-
-# --- Tile reading ---
-
-
 def test_read_tile_correct_region(tmp_rgb_tiff: Path) -> None:
     """Tile read returns the same data as slicing the full array."""
     frame = Frame(tmp_rgb_tiff)
@@ -802,9 +577,6 @@ def test_read_tile_full_extent(tmp_rgb_tiff: Path) -> None:
     np.testing.assert_array_equal(tile, full)
 
 
-# --- Plot ---
-
-
 def test_plot_rgb_returns_figure(tmp_rgb_tiff: Path) -> None:
     """Plotting an RGB frame returns a Plotly Figure."""
     fig = Frame(tmp_rgb_tiff).plot()
@@ -823,8 +595,8 @@ def test_plot_boolean_mask_returns_figure(tmp_bool_mask_tiff: Path) -> None:
     assert isinstance(fig, go.Figure)
 
 
-def test_plot_axes_in_fullres_coords(tmp_rgb_tiff: Path) -> None:
-    """Axes ranges match full-res pixel dimensions."""
+def test_plot_axes_in_native_coords(tmp_rgb_tiff: Path) -> None:
+    """Axes ranges match the frame's native pixel dimensions."""
     fig = Frame(tmp_rgb_tiff).plot()
     layout = fig.to_plotly_json()["layout"]
     x_range = layout["xaxis"]["range"]
@@ -833,20 +605,6 @@ def test_plot_axes_in_fullres_coords(tmp_rgb_tiff: Path) -> None:
     assert x_range[1] == IMG_W
     assert y_range[0] == IMG_H
     assert y_range[1] == 0
-
-
-def test_plot_proxy_axes_in_fullres_coords(
-    tmp_celestack_tiff: Path,
-) -> None:
-    """Proxy frame axes cover full-res extent, not proxy dimensions."""
-    frame = Frame(tmp_celestack_tiff)
-    proxy_h, proxy_w = frame.array.shape[:2]
-    fig = frame.plot()
-    layout = fig.to_plotly_json()["layout"]
-    x_range = layout["xaxis"]["range"]
-    y_range = layout["yaxis"]["range"]
-    assert x_range[1] == proxy_w * frame.downscale_factor
-    assert y_range[0] == proxy_h * frame.downscale_factor
 
 
 def test_plot_show_pixels_grayscale(tmp_gray_tiff: Path) -> None:
@@ -865,9 +623,6 @@ def test_plot_show_pixels_rgb(tmp_rgb_tiff: Path) -> None:
     assert isinstance(fig.data[0], go.Image)
 
 
-# --- Cache conservation ---
-
-
 def test_save_as_conserves_unloaded_cache(tmp_rgb_jpeg: Path, tmp_path: Path) -> None:
     """save_as() does not leave the array cached when it was not loaded before."""
     frame = Frame(tmp_rgb_jpeg)
@@ -882,23 +637,6 @@ def test_save_as_conserves_loaded_cache(tmp_rgb_jpeg: Path, tmp_path: Path) -> N
     _ = frame.array
     assert frame._array_cache is not None
     frame.save_as(tmp_path / "out.tif")
-    assert frame._array_cache is not None
-
-
-def test_downscaled_copy_conserves_unloaded_cache(tmp_rgb_tiff: Path) -> None:
-    """downscaled_copy() does not leave the source array cached when unloaded."""
-    frame = Frame(tmp_rgb_tiff)
-    assert frame._array_cache is None
-    frame.downscaled_copy(downscale_factor=2)
-    assert frame._array_cache is None
-
-
-def test_downscaled_copy_conserves_loaded_cache(tmp_rgb_tiff: Path) -> None:
-    """downscaled_copy() keeps the source array cached when already loaded."""
-    frame = Frame(tmp_rgb_tiff)
-    _ = frame.array
-    assert frame._array_cache is not None
-    frame.downscaled_copy(downscale_factor=2)
     assert frame._array_cache is not None
 
 
@@ -950,20 +688,10 @@ def test_plot_conserves_loaded_cache(tmp_rgb_tiff: Path) -> None:
     assert frame._array_cache is not None
 
 
-# --- Repr ---
-
-
 def test_repr_format(tmp_rgb_tiff: Path) -> None:
-    """__repr__ includes the path and downscale_factor."""
+    """__repr__ includes the path and dtype."""
     frame = Frame(tmp_rgb_tiff)
     r = repr(frame)
     assert "Frame(" in r
     assert str(tmp_rgb_tiff) in r
-    assert "downscale_factor=1" in r
-
-
-def test_repr_detached(tmp_rgb_tiff: Path) -> None:
-    """__repr__ shows <detached> for in-memory frames."""
-    proxy = Frame(tmp_rgb_tiff).downscaled_copy(2)
-    r = repr(proxy)
-    assert "<detached>" in r
+    assert "dtype='uint16'" in r

@@ -50,16 +50,13 @@ def extract_features(array: np.ndarray) -> np.ndarray:
     height, width = array.shape[:2]
     n_pixels = height * width
 
-    # Raw RGB channels flattened.
     rgb = array[..., :3].reshape(n_pixels, 3).astype(np.float32)
 
-    # Standardize RGB columns to zero mean and unit variance.
     rgb_mean = rgb.mean(axis=0)
     rgb_std = rgb.std(axis=0)
-    rgb_std[rgb_std == 0] = 1.0  # avoid division by zero for uniform channels
+    rgb_std[rgb_std == 0] = 1.0
     rgb = (rgb - rgb_mean) / rgb_std
 
-    # Spatial coordinates normalized to [-1, 1].
     x_coords = np.linspace(-1.0, 1.0, width, dtype=np.float32)
     y_coords = np.linspace(-1.0, 1.0, height, dtype=np.float32)
     xx, yy = np.meshgrid(x_coords, y_coords)

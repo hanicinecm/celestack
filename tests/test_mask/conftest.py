@@ -6,7 +6,6 @@ import numpy as np
 import pytest
 
 from celestack.frame.core import Frame
-from celestack.mask._mask_builder import MaskBuilder
 from celestack.mask.core import Mask
 from tests.utils import write_gray_tiff, write_rgb_tiff
 
@@ -62,11 +61,3 @@ def bool_values_mask_path(tmp_path: Path) -> Path:
 def gray_mask(gray_mask_path: Path) -> Mask:
     """Mask loaded from the gray_mask_path fixture."""
     return Mask(gray_mask_path)
-
-
-@pytest.fixture()
-def builder(rgb_frame: Frame) -> MaskBuilder:
-    """MaskBuilder with clusters computed (K=2)."""
-    mb = MaskBuilder(rgb_frame)
-    mb.compute_clusters(2)
-    return mb

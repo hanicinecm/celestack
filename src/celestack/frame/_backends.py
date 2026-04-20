@@ -9,11 +9,7 @@ import numpy as np
 import tifffile
 from PIL import Image
 
-from celestack.frame._metadata import (
-    CelestackMetadata,
-    FrameInfo,
-    parse_celestack_metadata,
-)
+from celestack.frame._metadata import FrameInfo
 
 
 class Backend(Protocol):
@@ -56,17 +52,11 @@ class TiffBackend:
             if not isinstance(page, tifffile.TiffPage):
                 msg = f"Unexpected TIFF page type: {type(page)}"
                 raise ValueError(msg)
-            bit_depth = page.bitspersample
-            if isinstance(bit_depth, tuple):
-                bit_depth = int(bit_depth[0])
-            if bit_depth is None:
-                bit_depth = np.dtype(page.dtype).itemsize * 8
-            info = FrameInfo(
-                bit_depth=int(bit_depth),
+            dtype = str(np.dtype(page.dtype))
+            return FrameInfo(
+                dtype=dtype,
                 shape=tuple(int(v) for v in page.shape),
-                celestack_metadata=parse_celestack_metadata(page),
             )
-        return info
 
     def load_array(self, path: Path) -> np.ndarray:
         """Load TIFF pixels using tifffile."""
@@ -78,20 +68,20 @@ class PillowBackend:
 
     SUFFIXES = frozenset({".jpg", ".jpeg", ".png"})
 
-    MODE_BIT_DEPTH = {
-        "1": 1,
-        "L": 8,
-        "P": 8,
-        "RGB": 8,
-        "RGBA": 8,
-        "CMYK": 8,
-        "YCbCr": 8,
-        "LAB": 8,
-        "HSV": 8,
-        "I;16": 16,
-        "I;16L": 16,
-        "I;16B": 16,
-        "I;16N": 16,
+    MODE_DTYPE = {
+        "1": "bool",
+        "L": "uint8",
+        "P": "uint8",
+        "RGB": "uint8",
+        "RGBA": "uint8",
+        "CMYK": "uint8",
+        "YCbCr": "uint8",
+        "LAB": "uint8",
+        "HSV": "uint8",
+        "I;16": "uint16",
+        "I;16L": "uint16",
+        "I;16B": "uint16",
+        "I;16N": "uint16",
     }
 
     def inspect(self, path: Path) -> FrameInfo:
@@ -100,15 +90,11 @@ class PillowBackend:
             width, height = image.size
             bands = len(image.getbands())
             shape = (height, width) if bands == 1 else (height, width, bands)
-            arr = np.asarray(image)
-            bit_depth = self.MODE_BIT_DEPTH.get(image.mode)
-            if bit_depth is None:
-                bit_depth = arr.dtype.itemsize * 8
-            return FrameInfo(
-                bit_depth=bit_depth,
-                shape=shape,
-                celestack_metadata=CelestackMetadata(),
-            )
+            dtype = self.MODE_DTYPE.get(image.mode)
+            if dtype is None:
+                arr = np.asarray(image)
+                dtype = str(arr.dtype)
+            return FrameInfo(dtype=dtype, shape=shape)
 
     def load_array(self, path: Path) -> np.ndarray:
         """Load pixels via Pillow and convert to a NumPy array."""

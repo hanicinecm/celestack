@@ -33,7 +33,6 @@ def plot_frame(
     array: np.ndarray,
     *,
     bit_depth: int,
-    downscale_factor: int,
     title: str = "<Frame>",
     show_pixels: bool = False,
 ) -> go.Figure:
@@ -42,15 +41,14 @@ def plot_frame(
     Args:
         array: Image pixel data.
         bit_depth: Source bit depth for correct value scaling.
-        downscale_factor: Ratio between full-res and proxy dimensions.
         title: Figure title (typically the filename).
         show_pixels: Whether to plot with pixel hover data.
 
     Returns:
-        A figure with axes in full-resolution pixel coordinates.
+        A figure with axes in the frame's pixel coordinates.
     """
-    full_h = array.shape[0] * downscale_factor
-    full_w = array.shape[1] * downscale_factor
+    full_h = array.shape[0]
+    full_w = array.shape[1]
 
     if show_pixels:
         fig = go.Figure()
@@ -60,9 +58,9 @@ def plot_frame(
                 go.Heatmap(
                     z=array,
                     x0=0,
-                    dx=downscale_factor,
+                    dx=1,
                     y0=0,
-                    dy=downscale_factor,
+                    dy=1,
                     zmin=0,
                     zmax=zmax,
                     colorscale="gray",
@@ -74,9 +72,9 @@ def plot_frame(
                 go.Image(
                     z=array,
                     x0=0,
-                    dx=downscale_factor,
+                    dx=1,
                     y0=0,
-                    dy=downscale_factor,
+                    dy=1,
                     zmax=[zmax, zmax, zmax, 1],
                 )
             )

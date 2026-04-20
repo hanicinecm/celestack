@@ -1,4 +1,4 @@
-"""Tests for the MaskBuilder class (src/celestack/mask/_mask_builder.py)."""
+"""Tests for the MaskBuilder class (src/celestack/mask_builder/core.py)."""
 
 from pathlib import Path
 
@@ -7,9 +7,9 @@ import pytest
 
 from celestack.exceptions import MaskError
 from celestack.frame.core import Frame
-from celestack.mask._clustering import ClusterWeights
-from celestack.mask._mask_builder import MaskBuilder
 from celestack.mask.core import Mask
+from celestack.mask_builder._clustering import ClusterWeights
+from celestack.mask_builder.core import MaskBuilder
 
 
 # ===========================================================================

@@ -6,7 +6,7 @@ import numpy as np
 import plotly.graph_objects as go
 import polars as pl
 
-from celestack.frame.core import Frame
+from celestack.proxy.frame import ProxyFrame
 
 _SEGMENT_BOUNDARY_COLOR = "rgba(255, 255, 0, 0.35)"  # segment boundary dots
 _MIN_STAR_MARKER = 3  # scatter marker size for the faintest stars
@@ -17,13 +17,12 @@ _STAR_COLORSCALE = "Viridis"  # flux → colour scale for star markers
 # are silently skipped so the plot never breaks on partial data.
 _STAR_HOVER_COLS: tuple[tuple[str, str], ...] = (
     ("star_id", "id=%d"),
-    ("x0", "x0=%.1f"),
-    ("y0", "y0=%.1f"),
-    ("flux", "flux=%.0f"),
-    ("flux_local", "flux_local=%.0f"),
+    ("x", "x=%.1f"),
+    ("y", "y=%.1f"),
+    ("flux", "flux=%.4f"),
     ("fwhm", "fwhm=%.2f"),
     ("roundness", "roundness=%.2f"),
-    ("threshold", "threshold=%.1f"),
+    ("threshold", "threshold=%.4f"),
     ("threshold_sigma", "threshold_sigma=%.2fσ"),
     ("segment_id", "segment=%d"),
 )
@@ -31,20 +30,18 @@ _STAR_HOVER_COLS: tuple[tuple[str, str], ...] = (
 
 def _segment_boundary_coords(
     segment_labels: np.ndarray,
-    downscale_factor: int,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Find boundary pixels between segments and scale to full-res.
+    """Find boundary pixels between segments in proxy pixel coordinates.
 
     A pixel is a boundary pixel if any of its 4-connected neighbours
     belongs to a different segment or is foreground (``-1``).
 
     Args:
         segment_labels: 2D int32 label array (proxy space).
-        downscale_factor: Scale factor to full-res coordinates.
 
     Returns:
         ``(x_coords, y_coords, seg_ids)`` — boundary pixel coordinates in
-        full-resolution pixel space, plus the segment label owning each pixel.
+        proxy pixel space, plus the segment label owning each pixel.
     """
     h, w = segment_labels.shape
     is_boundary = np.zeros((h, w), dtype=bool)
@@ -67,40 +64,37 @@ def _segment_boundary_coords(
 
     rows, cols = np.where(is_boundary)
     return (
-        cols.astype(np.float64) * downscale_factor,
-        rows.astype(np.float64) * downscale_factor,
+        cols.astype(np.float64),
+        rows.astype(np.float64),
         segment_labels[rows, cols],
     )
 
 
 def plot_stars(
-    frame: Frame,
+    frame: ProxyFrame,
     segment_labels: np.ndarray | None,
     stars: pl.DataFrame | None,
     show_segments: bool,
 ) -> go.Figure:
-    """Create a Plotly figure with available detection results overlaid on the frame.
+    """Create a Plotly figure with available detection results overlaid on the proxy.
 
     Both *stars* and *segment_labels* are optional — the figure is always
     returned regardless of which have been computed.
 
     Args:
-        frame: Source frame (provides the base image via ``plot()``).
-        segment_labels: Optional 2D segment label array (label-image space).
-        stars: Optional DataFrame with ``x0``, ``y0``, ``flux_local`` columns.
-            ``x0`` and ``y0`` are in full-resolution pixel coordinates,
-            matching the axes of ``frame.plot()``.  Pass ``None`` to omit.
+        frame: Source proxy frame (provides the base image via ``plot()``).
+        segment_labels: Optional 2D segment label array (proxy space).
+        stars: Optional DataFrame with ``x``, ``y``, ``flux`` columns in
+            proxy pixel coordinates. Pass ``None`` to omit.
         show_segments: Whether to overlay segment boundary lines.
 
     Returns:
-        Plotly figure with the frame image and any available overlays.
+        Plotly figure with the proxy image and any available overlays.
     """
     fig = frame.plot()
 
     if show_segments and segment_labels is not None:
-        bx, by, seg_ids = _segment_boundary_coords(
-            segment_labels, frame.downscale_factor
-        )
+        bx, by, seg_ids = _segment_boundary_coords(segment_labels)
         fig.add_trace(
             go.Scatter(
                 x=bx.tolist(),
@@ -118,7 +112,7 @@ def plot_stars(
         )
 
     if stars is not None:
-        flux = stars["flux_local"].to_numpy()
+        flux = stars["flux"].to_numpy()
         if flux.size > 0:
             flux_min, flux_max = float(flux.min()), float(flux.max())
             flux_range = flux_max - flux_min if flux_max > flux_min else 1.0
@@ -133,8 +127,8 @@ def plot_stars(
 
         fig.add_trace(
             go.Scatter(
-                x=stars["x0"].to_list(),
-                y=stars["y0"].to_list(),
+                x=stars["x"].to_list(),
+                y=stars["y"].to_list(),
                 mode="markers",
                 marker=dict(
                     color=flux.tolist() if flux.size > 0 else [],

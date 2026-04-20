@@ -11,16 +11,14 @@ import plotly.graph_objects as go
 import tifffile
 
 from celestack.config import CFG
-from celestack.exceptions import DownscaleError
 from celestack.frame._backends import EmptyBackend, get_backends, is_tiff_path
-from celestack.frame._image_ops import downscale_by_block_average, to_grayscale
-from celestack.frame._metadata import CELESTACK_KEY
+from celestack.frame._image_ops import to_grayscale
 from celestack.mask._morphology import remove_small_components
 from celestack.mask._plotting import plot_mask
 
 
 class Mask:
-    """Boolean foreground mask backed by an 8-bit grayscale TIFF.
+    """Boolean full-resolution foreground mask backed by an 8-bit grayscale TIFF.
 
     Construction paths:
 
@@ -58,21 +56,17 @@ class Mask:
         self._backend = backends[suffix]
         info = self._backend.inspect(resolved)
         self._shape: tuple[int, int] = (info.shape[0], info.shape[1])
-        self._downscale_factor: int = info.celestack_metadata.downscale_factor
         self._array_cache: np.ndarray | None = None
 
     @classmethod
-    def _from_array(cls, array: np.ndarray, *, downscale_factor: int = 1) -> Mask:
+    def _from_array(cls, array: np.ndarray) -> Mask:
         """Create an in-memory mask from a boolean array.
 
         The array is cast to ``bool`` if it is not already. The resulting
-        mask has no backing path and a ``downscale_factor`` of 1 by default,
-        but this can be overridden.
+        mask has no backing path.
 
         Args:
             array: 2D array of shape (H, W).
-            downscale_factor: Linear downscale factor relative to the full-resolution
-                source.
 
         Returns:
             A Mask with no backing path.
@@ -81,7 +75,6 @@ class Mask:
         instance._path = None
         instance._backend = EmptyBackend()
         instance._shape = (int(array.shape[0]), int(array.shape[1]))
-        instance._downscale_factor = downscale_factor
         instance._array_cache = np.array(array, dtype=np.bool_)
         return instance
 
@@ -106,16 +99,6 @@ class Mask:
     def shape(self) -> tuple[int, int]:
         """Mask dimensions as ``(height, width)``."""
         return self._shape
-
-    @property
-    def downscale_factor(self) -> int:
-        """Linear downscale factor relative to the full-resolution source.
-
-        Defaults to 1 for full-resolution and external masks. Proxy masks
-        written by :meth:`save_as` on a downscaled copy embed their factor
-        in Celestack metadata, which is read back on construction.
-        """
-        return self._downscale_factor
 
     @property
     def array(self) -> np.ndarray:
@@ -168,8 +151,7 @@ class Mask:
 
         Always writes from the boolean array (``True`` → 255, ``False`` → 0).
         Never copies an existing file verbatim, ensuring the on-disk format
-        is always a clean 8-bit grayscale TIFF. Proxy masks
-        (``downscale_factor > 1``) have Celestack metadata embedded automatically.
+        is always a clean 8-bit grayscale TIFF.
 
         The array cache is conserved: if it was not loaded before the call,
         it is unloaded afterwards.
@@ -191,13 +173,6 @@ class Mask:
             raise FileExistsError(msg)
         target.parent.mkdir(parents=True, exist_ok=True)
 
-        if self._downscale_factor > 1:
-            metadata: dict | None = {
-                CELESTACK_KEY: {"downscale_factor": int(self._downscale_factor)}
-            }
-        else:
-            metadata = None
-
         with self._conserve_cache():
             data = self.array.astype(np.uint8) * 255
             tifffile.imwrite(
@@ -205,47 +180,11 @@ class Mask:
                 data=data,
                 compression="zlib",
                 photometric="minisblack",
-                metadata=metadata,
             )
 
         self._path = target
         backends = get_backends()
         self._backend = backends[target.suffix.lower()]
-
-    def downscaled_copy(self, downscale_factor: int) -> Mask:
-        """Return a detached downscaled copy of this mask.
-
-        Uses majority voting: blocks where more than half the pixels are
-        foreground become foreground in the downscaled result. The result
-        is held in memory. Call :meth:`save_as` on the returned mask to
-        persist it; the ``downscale_factor`` is embedded in Celestack
-        metadata automatically.
-
-        The array cache is conserved: if it was not loaded before the call,
-        it is unloaded afterwards.
-
-        Args:
-            downscale_factor: Integer linear downscale factor (>= 1).
-
-        Returns:
-            A new detached Mask with the downscaled boolean data.
-
-        Raises:
-            DownscaleError: If called on an already-downscaled mask.
-            ValueError: If *downscale_factor* is less than 1.
-        """
-        if self._downscale_factor != 1:
-            msg = "Cannot downscale a proxy mask"
-            raise DownscaleError(msg)
-        if downscale_factor < 1:
-            msg = "downscale_factor must be >= 1"
-            raise ValueError(msg)
-
-        with self._conserve_cache():
-            averaged = downscale_by_block_average(self.array, downscale_factor)
-            downscaled = averaged > 0.5
-
-        return Mask._from_array(downscaled, downscale_factor=downscale_factor)
 
     def mask_rectangle(
         self, x0: int, y0: int, x1: int, y1: int, *, foreground: bool
@@ -337,9 +276,9 @@ class Mask:
     ) -> go.Figure:
         """Visualize the mask as a black-and-white Plotly figure.
 
-        Axes are in full-resolution pixel coordinates, accounting for
-        ``downscale_factor``. The array cache is conserved: if the pixel
-        data was not loaded before the call, it is unloaded afterwards.
+        Axes are in the mask's native pixel coordinates. The array cache
+        is conserved: if the pixel data was not loaded before the call,
+        it is unloaded afterwards.
 
         When *highlight_noise* is non-zero, small connected components
         are shown as Scatter markers: foreground noise in red and
@@ -357,7 +296,6 @@ class Mask:
             figure = plot_mask(
                 self.array,
                 title=self._path.name if self._path is not None else "<detached>",
-                downscale_factor=self._downscale_factor,
                 highlight_noise=highlight_noise,
             )
         return figure
@@ -365,4 +303,4 @@ class Mask:
     def __repr__(self) -> str:
         """Return a concise debug representation of the mask."""
         path_str = str(self._path) if self._path is not None else "<detached>"
-        return f"Mask({path_str!r}, downscale_factor={self._downscale_factor})"
+        return f"Mask({path_str!r})"

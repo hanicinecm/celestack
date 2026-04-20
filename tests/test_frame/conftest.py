@@ -7,7 +7,6 @@ import pytest
 import tifffile
 from PIL import Image
 
-from celestack.frame._metadata import CELESTACK_KEY
 from tests.utils import (
     CAMERA_MAKE,
     CAMERA_MODEL,
@@ -113,24 +112,3 @@ def tmp_bool_mask_tiff(tmp_path: Path) -> Path:
     array = rng.choice([True, False], size=(IMG_H, IMG_W))
     path = tmp_path / "mask.tif"
     return write_tiff(path, array.astype(np.uint8), photometric="minisblack")
-
-
-@pytest.fixture()
-def tmp_celestack_tiff(tmp_path: Path) -> Path:
-    """TIFF with embedded Celestack metadata (downscale_factor, timestamp)."""
-    array = np.random.default_rng(48).integers(
-        0, 255, (IMG_H // 4, IMG_W // 4), dtype=np.uint8
-    )
-    path = tmp_path / "proxy.tif"
-    celestack_meta = {
-        CELESTACK_KEY: {
-            "downscale_factor": 4,
-            "timestamp": 1752620400.0,
-        }
-    }
-    return write_tiff(
-        path,
-        array,
-        photometric="minisblack",
-        metadata=celestack_meta,
-    )

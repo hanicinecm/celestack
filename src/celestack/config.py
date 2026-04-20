@@ -24,7 +24,7 @@ class FrameConfig:
     All fields carry sensible defaults.
     """
 
-    hot_pixel_mad_sigma: float = 30.0  # MAD multiplier for hot-pixel detection
+    hot_pixel_mad_sigma: float = 10.0  # MAD multiplier for hot-pixel detection
 
 
 @dataclass(frozen=True)
@@ -47,7 +47,7 @@ class StarDetectorConfig:
     """
 
     # fwhm estimation
-    fwhm_range: tuple[float, float] = (3.0, 11.0)  # FWHM limits in full-res pixels
+    fwhm_range: tuple[float, float] = (1.5, 5.5)  # FWHM limits in proxy pixels
     fwhm_n_steps: int = 49  # FWHM candidates evaluated
     fwhm_threshold_sigma: float = 2.5  # detection threshold as N * bg σ
 
@@ -62,8 +62,20 @@ class StarDetectorConfig:
     default_n_segments: int = 40  # sky segments for segment()
     default_target_stars: int = 1000  # target star count for detect()
     default_max_roundness: float = 1.7  # DAOStarFinder bounds
-    default_edge_margin: int = 15  # edges exclusion zone in full-res pixels
-    default_min_separation: int = 15  # min separation in full-res pixels
+    default_edge_margin: int = 8  # edges exclusion zone in proxy pixels
+    default_min_separation: int = 8  # min separation in proxy pixels
+
+
+@dataclass(frozen=True)
+class ProxyConfig:
+    """Frozen configuration for the :mod:`celestack.proxy` sub-package.
+
+    All fields carry sensible defaults.
+    """
+
+    default_downscale_factor: int = 2  # canonical proxy scale factor
+    background_box_size: int = 16  # photutils Background2D box size (proxy pixels)
+    background_filter_size: int = 1  # photutils Background2D median filter window
 
 
 @dataclass(frozen=True)
@@ -77,6 +89,7 @@ class AppConfig:
     averaging: AveragingConfig = field(default_factory=AveragingConfig)
     frame: FrameConfig = field(default_factory=FrameConfig)
     mask: MaskConfig = field(default_factory=MaskConfig)
+    proxy: ProxyConfig = field(default_factory=ProxyConfig)
 
 
 def _load_config() -> AppConfig:

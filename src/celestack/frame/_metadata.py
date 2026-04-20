@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from datetime import datetime
 from fractions import Fraction
@@ -10,9 +9,6 @@ from pathlib import Path
 from typing import Any
 
 import exifread
-import tifffile
-
-CELESTACK_KEY = "celestack"  # Key for Celestack metadata in TIFF ImageDescription
 
 
 def as_float(value: Any) -> float | None:
@@ -71,20 +67,11 @@ class ExifMetadata:
 
 
 @dataclass(frozen=True)
-class CelestackMetadata:
-    """Structured Celestack metadata embedded into proxy TIFF files."""
-
-    downscale_factor: int = 1
-    timestamp: float | None = None
-
-
-@dataclass(frozen=True)
 class FrameInfo:
     """Metadata discovered during lightweight frame inspection."""
 
-    bit_depth: int
+    dtype: str
     shape: tuple[int, ...]
-    celestack_metadata: CelestackMetadata
 
 
 def extract_exif_metadata(path: Path) -> ExifMetadata:
@@ -188,41 +175,3 @@ def build_tiff_extratags(
     if lens:
         extra.append((42036, "s", 0, str(lens), True))
     return extra
-
-
-def parse_celestack_metadata(page: tifffile.TiffPage) -> CelestackMetadata:
-    """Extract Celestack-specific metadata from TIFF ImageDescription."""
-    tag = page.tags.get("ImageDescription")
-    if tag is None:
-        return CelestackMetadata()
-
-    raw = tag.value
-    if not isinstance(raw, str):
-        return CelestackMetadata()
-
-    try:
-        decoded = json.loads(raw)
-    except json.JSONDecodeError:
-        return CelestackMetadata()
-
-    if not isinstance(decoded, dict):
-        return CelestackMetadata()
-
-    block = decoded.get(CELESTACK_KEY)
-    if isinstance(block, dict):
-        downscale = block.get("downscale_factor")
-        timestamp = block.get("timestamp")
-        return CelestackMetadata(
-            downscale_factor=int(downscale) if downscale is not None else 1,
-            timestamp=float(timestamp) if timestamp is not None else None,
-        )
-
-    if "downscale_factor" in decoded or "timestamp" in decoded:
-        downscale = decoded.get("downscale_factor")
-        timestamp = decoded.get("timestamp")
-        return CelestackMetadata(
-            downscale_factor=int(downscale) if downscale is not None else 1,
-            timestamp=float(timestamp) if timestamp is not None else None,
-        )
-
-    return CelestackMetadata()

@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from celestack.mask._clustering import (
+from celestack.mask_builder._clustering import (
     ClusterWeights,
     extract_features,
     relabel_by_descending_y,
