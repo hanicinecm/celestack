@@ -444,9 +444,9 @@ def test_interpolate_bad_pixels_hot_pixel_replaced(tmp_path: Path) -> None:
     """Hot dark pixels are replaced by 8-neighbor mean in the light frame."""
     from tests.utils import write_gray_tiff
 
-    light_arr = np.full((3, 3), 1000, dtype=np.uint16)
-    dark_arr = np.full((3, 3), 100, dtype=np.uint16)
-    dark_arr[1, 1] = 20000
+    light_arr = np.full((7, 7), 1000, dtype=np.uint16)
+    dark_arr = np.full((7, 7), 100, dtype=np.uint16)
+    dark_arr[3, 3] = 20000
 
     light = Frame(write_gray_tiff(tmp_path / "light.tif", light_arr))
     dark = Frame(write_gray_tiff(tmp_path / "dark.tif", dark_arr))
@@ -454,7 +454,50 @@ def test_interpolate_bad_pixels_hot_pixel_replaced(tmp_path: Path) -> None:
     light.interpolate_bad_pixels(dark)
 
     assert light.array[0, 0] == 1000
-    assert light.array[1, 1] == 1000
+    assert light.array[3, 3] == 1000
+
+
+def test_interpolate_bad_pixels_bleed_aware_dilates_patch(tmp_path: Path) -> None:
+    """Bleed-aware mode replaces the full 3x3 block around a hot pixel."""
+    from tests.utils import write_gray_tiff
+
+    light_arr = np.full((9, 9), 1000, dtype=np.uint16)
+    for dy in (-1, 0, 1):
+        for dx in (-1, 0, 1):
+            if dy == 0 and dx == 0:
+                continue
+            light_arr[4 + dy, 4 + dx] = 3000
+    light_arr[4, 4] = 60000
+    dark_arr = np.full((9, 9), 100, dtype=np.uint16)
+    dark_arr[4, 4] = 20000
+
+    light = Frame(write_gray_tiff(tmp_path / "light.tif", light_arr))
+    dark = Frame(write_gray_tiff(tmp_path / "dark.tif", dark_arr))
+
+    light.interpolate_bad_pixels(dark, bleed_aware=True)
+
+    for dy in (-1, 0, 1):
+        for dx in (-1, 0, 1):
+            assert light.array[4 + dy, 4 + dx] < 2000
+
+
+def test_interpolate_bad_pixels_bleed_aware_false_keeps_legacy(tmp_path: Path) -> None:
+    """bleed_aware=False only replaces the flagged pixel, not its neighbors."""
+    from tests.utils import write_gray_tiff
+
+    light_arr = np.full((9, 9), 1000, dtype=np.uint16)
+    light_arr[3, 4] = 3000
+    light_arr[4, 4] = 60000
+    dark_arr = np.full((9, 9), 100, dtype=np.uint16)
+    dark_arr[4, 4] = 20000
+
+    light = Frame(write_gray_tiff(tmp_path / "light.tif", light_arr))
+    dark = Frame(write_gray_tiff(tmp_path / "dark.tif", dark_arr))
+
+    light.interpolate_bad_pixels(dark, bleed_aware=False)
+
+    assert light.array[3, 4] == 3000
+    assert light.array[4, 4] != 60000
 
 
 def test_interpolate_bad_pixels_detaches_from_path(tmp_path: Path) -> None:

@@ -3,6 +3,7 @@
 from pathlib import Path
 
 import numpy as np
+import plotly.graph_objects as go
 import pytest
 
 from celestack.exceptions import ProxyMetadataError
@@ -103,6 +104,14 @@ def test_load_missing_sidecar_raises(tmp_path: Path) -> None:
     np.save(target, arr)
     with pytest.raises(ProxyMetadataError):
         ProxyMask(target)
+
+
+def test_plot_returns_figure() -> None:
+    """ProxyMask.plot returns a Plotly figure with a layout image."""
+    pm = ProxyMask.from_mask(_make_mask((16, 16)), 4)
+    fig = pm.plot()
+    assert isinstance(fig, go.Figure)
+    assert len(fig.layout.images) == 1
 
 
 def test_repr_detached() -> None:

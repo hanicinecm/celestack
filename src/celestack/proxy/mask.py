@@ -5,7 +5,10 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
+import plotly.graph_objects as go
 
+from celestack.config import CFG
+from celestack.mask._plotting import plot_mask
 from celestack.mask.core import Mask
 from celestack.proxy._core import (
     load_downscale_factor,
@@ -57,7 +60,9 @@ class ProxyMask:
         self._downscale_factor: int = load_downscale_factor(resolved)
 
     @classmethod
-    def from_mask(cls, mask: Mask, downscale_factor: int) -> ProxyMask:
+    def from_mask(
+        cls, mask: Mask, downscale_factor: int = CFG.proxy.default_downscale_factor
+    ) -> ProxyMask:
         """Create a detached proxy from a full-resolution :class:`Mask`.
 
         Args:
@@ -127,9 +132,20 @@ class ProxyMask:
             raise FileExistsError(msg)
         target.parent.mkdir(parents=True, exist_ok=True)
 
-        np.save(target, self._array)
         write_or_verify_downscale_factor(target, self._downscale_factor)
+        np.save(target, self._array)
         self._path = target
+
+    def plot(self) -> go.Figure:
+        """Render the proxy mask as a black-and-white Plotly figure.
+
+        Axes are in the proxy mask's native pixel coordinates.
+
+        Returns:
+            A Plotly figure with the boolean mask rendered as a static PNG.
+        """
+        title = self._path.name if self._path is not None else "<detached>"
+        return plot_mask(self._array, title=title, highlight_noise=0)
 
     def __repr__(self) -> str:
         """Return a concise debug representation of the proxy mask."""

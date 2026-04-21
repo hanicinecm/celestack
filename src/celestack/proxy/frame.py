@@ -62,14 +62,14 @@ class ProxyFrame:
         self._downscale_factor: int = load_downscale_factor(resolved)
 
     @classmethod
-    def from_frame(
+    def from_masked_frame(
         cls,
         frame: Frame,
-        mask: Mask,
-        downscale_factor: int,
+        mask: Mask | ProxyMask,
         *,
-        box_size: int | None = None,
-        filter_size: int | None = None,
+        downscale_factor: int = CFG.proxy.default_downscale_factor,
+        box_size: int = CFG.proxy.background_box_size,
+        filter_size: int = CFG.proxy.background_filter_size,
     ) -> ProxyFrame:
         """Build a detached proxy from a full-resolution frame and mask.
 
@@ -79,13 +79,20 @@ class ProxyFrame:
         2. Block-average down by *downscale_factor*.
         3. Rescale into ``[0, 1]`` as float16 using the source integer
            dtype range.
-        4. Build a :class:`ProxyMask` from *mask* at the same factor.
+        4. Resolve the proxy mask: if *mask* is a full-resolution
+           :class:`Mask`, downscale it by *downscale_factor*; if *mask*
+           is already a :class:`ProxyMask`, verify its
+           ``downscale_factor`` and shape match the downscaled frame.
         5. Subtract a 2D sky background model (via photutils), zeroing
            masked pixels.
 
         Args:
             frame: Full-resolution source frame. Must be uint8 or uint16.
-            mask: Full-resolution foreground mask matching *frame*.
+            mask: Either a full-resolution :class:`Mask` matching *frame*,
+                or a pre-computed :class:`ProxyMask` matching the
+                downscaled frame and *downscale_factor*. Passing a
+                :class:`ProxyMask` avoids redundant downscaling when the
+                same mask is reused across many frames.
             downscale_factor: Integer downscale factor (>= 1).
             box_size: Optional override for ``photutils.Background2D``
                 box size. Defaults to ``CFG.proxy.background_box_size``.
@@ -96,34 +103,48 @@ class ProxyFrame:
             A detached in-memory :class:`ProxyFrame`.
 
         Raises:
-            ValueError: If *frame* has an unsupported dtype or the mask
-                shape does not agree with the downscaled frame.
+            ValueError: If *frame* has an unsupported dtype, if a
+                full-resolution *mask* shape does not match *frame*, or
+                if a :class:`ProxyMask` does not agree with the
+                downscaled frame in factor or shape.
         """
         if frame.dtype not in _INT_DTYPES:
             msg = (
                 f"ProxyFrame source must be uint8 or uint16; got dtype {frame.dtype!r}"
             )
             raise ValueError(msg)
-        if mask.shape != frame.shape[:2]:
-            msg = (
-                f"Mask shape {mask.shape} does not match frame shape {frame.shape[:2]}"
-            )
-            raise ValueError(msg)
-
-        box_size = CFG.proxy.background_box_size if box_size is None else box_size
-        filter_size = (
-            CFG.proxy.background_filter_size if filter_size is None else filter_size
-        )
 
         gray = to_grayscale(frame.array)
         small = block_average(gray, downscale_factor)
         max_value = float(np.iinfo(np.dtype(frame.dtype)).max)
         rescaled = (small.astype(np.float32) / max_value).astype(np.float16)
 
-        proxy_mask = ProxyMask.from_mask(mask, downscale_factor)
+        if isinstance(mask, ProxyMask):
+            if mask.downscale_factor != downscale_factor:
+                msg = (
+                    f"ProxyMask downscale_factor {mask.downscale_factor} does not "
+                    f"match requested downscale_factor {downscale_factor}"
+                )
+                raise ValueError(msg)
+            if mask.shape != rescaled.shape:
+                msg = (
+                    f"ProxyMask shape {mask.shape} does not match downscaled "
+                    f"frame shape {rescaled.shape}"
+                )
+                raise ValueError(msg)
+            proxy_mask = mask
+        else:
+            if mask.shape != frame.shape[:2]:
+                msg = (
+                    f"Mask shape {mask.shape} does not match frame shape "
+                    f"{frame.shape[:2]}"
+                )
+                raise ValueError(msg)
+            proxy_mask = ProxyMask.from_mask(mask, downscale_factor)
+
         if proxy_mask.shape != rescaled.shape:
             msg = (
-                f"Downscaled mask shape {proxy_mask.shape} does not match "
+                f"Proxy mask shape {proxy_mask.shape} does not match "
                 f"downscaled frame shape {rescaled.shape}"
             )
             raise ValueError(msg)
@@ -195,8 +216,8 @@ class ProxyFrame:
             raise FileExistsError(msg)
         target.parent.mkdir(parents=True, exist_ok=True)
 
-        np.save(target, self._array)
         write_or_verify_downscale_factor(target, self._downscale_factor)
+        np.save(target, self._array)
         self._path = target
 
     def plot(self) -> go.Figure:

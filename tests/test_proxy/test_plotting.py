@@ -27,6 +27,8 @@ def test_plot_proxy_frame_all_zero() -> None:
 
 def test_proxyframe_plot(rgb_frame: Frame, sky_mask: Mask) -> None:
     """ProxyFrame.plot returns a Plotly figure."""
-    pf = ProxyFrame.from_frame(rgb_frame, sky_mask, 4, box_size=8, filter_size=1)
+    pf = ProxyFrame.from_masked_frame(
+        rgb_frame, sky_mask, downscale_factor=4, box_size=8, filter_size=1
+    )
     fig = pf.plot()
     assert isinstance(fig, go.Figure)

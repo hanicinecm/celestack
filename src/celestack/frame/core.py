@@ -259,17 +259,28 @@ class Frame:
         self._array_cache = result_array
         self._detach()
 
-    def interpolate_bad_pixels(self, master_dark: Frame) -> None:
+    def interpolate_bad_pixels(
+        self, master_dark: Frame, *, bleed_aware: bool = False
+    ) -> None:
         """Replace hot pixels in this frame using the master dark as a bad pixel map.
 
         Identifies hot pixels in *master_dark* via a MAD-based threshold and
-        replaces the corresponding positions in this frame with the median of
-        their valid 8-connected neighbors. Self is detached from its backing
-        path after the operation.
+        replaces the corresponding positions in this frame by a weighted mean
+        of their valid neighbors. Self is detached from its backing path after
+        the operation.
+
+        When ``bleed_aware=True``, the 8-neighbors of each flagged
+        pixel are also treated as contaminated by charge bleed: the full 3×3
+        block is replaced from the surrounding 5×5 ring with added local-σ
+        noise, so the patch does not emerge as a low-variance island after
+        frame stacking. With ``bleed_aware=False`` (default), the legacy behavior is
+        used: each flagged pixel is replaced by the plain mean of its valid
+        8-connected neighbors.
 
         Args:
             master_dark: Master dark frame used solely for hot-pixel
                 detection. Must match shape and dtype.
+            bleed_aware: See description.
 
         Raises:
             ValueError: If the frames are incompatible.
@@ -277,7 +288,9 @@ class Frame:
         self._validate_similarity(master_dark)
         with master_dark._conserve_cache():
             mask = build_dark_bad_pixel_mask(master_dark.array)
-            result_array = interpolate_bad_pixels(self.array, mask)
+            result_array = interpolate_bad_pixels(
+                self.array, mask, bleed_aware=bleed_aware
+            )
         self._array_cache = result_array
         self._detach()
 

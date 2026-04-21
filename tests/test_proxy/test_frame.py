@@ -10,11 +10,14 @@ from celestack.frame.core import Frame
 from celestack.mask.core import Mask
 from celestack.proxy._core import METADATA_FILENAME
 from celestack.proxy.frame import ProxyFrame
+from celestack.proxy.mask import ProxyMask
 
 
 def test_from_frame_produces_float16_array(rgb_frame: Frame, sky_mask: Mask) -> None:
     """from_frame returns a 2D float16 array with the expected downscaled shape."""
-    pf = ProxyFrame.from_frame(rgb_frame, sky_mask, 4, box_size=8, filter_size=1)
+    pf = ProxyFrame.from_masked_frame(
+        rgb_frame, sky_mask, downscale_factor=4, box_size=8, filter_size=1
+    )
     assert pf.dtype == "float16"
     assert pf.array.dtype == np.float16
     assert pf.shape == (rgb_frame.shape[0] // 4, rgb_frame.shape[1] // 4)
@@ -23,14 +26,18 @@ def test_from_frame_produces_float16_array(rgb_frame: Frame, sky_mask: Mask) -> 
 
 def test_from_frame_zeros_foreground(rgb_frame: Frame, sky_mask: Mask) -> None:
     """Masked pixels in the proxy are exactly 0.0."""
-    pf = ProxyFrame.from_frame(rgb_frame, sky_mask, 4, box_size=8, filter_size=1)
+    pf = ProxyFrame.from_masked_frame(
+        rgb_frame, sky_mask, downscale_factor=4, box_size=8, filter_size=1
+    )
     # Bottom 8 rows of the full-res mask → bottom 2 rows of a /4 proxy
     assert np.all(pf.array[-2:, :] == np.float16(0.0))
 
 
 def test_from_frame_sky_near_zero(rgb_frame: Frame, sky_mask: Mask) -> None:
     """Sky pixel median is close to zero after background subtraction."""
-    pf = ProxyFrame.from_frame(rgb_frame, sky_mask, 4, box_size=8, filter_size=1)
+    pf = ProxyFrame.from_masked_frame(
+        rgb_frame, sky_mask, downscale_factor=4, box_size=8, filter_size=1
+    )
     sky = pf.array[pf.array != 0]
     assert abs(float(np.median(sky))) < 0.1
 
@@ -44,19 +51,52 @@ def test_from_frame_rejects_non_integer_dtype(rgb_frame: Frame, sky_mask: Mask) 
         array = rgb_frame.array.astype(np.float32)
 
     with pytest.raises(ValueError, match="uint8 or uint16"):
-        ProxyFrame.from_frame(FakeFrame(), sky_mask, 2)
+        ProxyFrame.from_masked_frame(FakeFrame(), sky_mask, downscale_factor=2)
 
 
 def test_from_frame_mask_shape_mismatch(rgb_frame: Frame) -> None:
     """Mask shape must match the frame."""
     bad_mask = Mask._from_array(np.zeros((10, 10), dtype=np.bool_))
     with pytest.raises(ValueError, match="Mask shape"):
-        ProxyFrame.from_frame(rgb_frame, bad_mask, 2)
+        ProxyFrame.from_masked_frame(rgb_frame, bad_mask, downscale_factor=2)
+
+
+def test_from_masked_frame_accepts_proxy_mask(rgb_frame: Frame, sky_mask: Mask) -> None:
+    """Passing a ProxyMask skips downscaling and produces the same output."""
+    proxy_mask = ProxyMask.from_mask(sky_mask, 4)
+    pf_from_mask = ProxyFrame.from_masked_frame(
+        rgb_frame, sky_mask, downscale_factor=4, box_size=8, filter_size=1
+    )
+    pf_from_proxy = ProxyFrame.from_masked_frame(
+        rgb_frame, proxy_mask, downscale_factor=4, box_size=8, filter_size=1
+    )
+    np.testing.assert_array_equal(pf_from_proxy.array, pf_from_mask.array)
+    assert pf_from_proxy.downscale_factor == 4
+
+
+def test_from_masked_frame_proxy_mask_factor_mismatch(
+    rgb_frame: Frame, sky_mask: Mask
+) -> None:
+    """A ProxyMask with a different downscale_factor is rejected."""
+    proxy_mask = ProxyMask.from_mask(sky_mask, 2)
+    with pytest.raises(ValueError, match="downscale_factor"):
+        ProxyFrame.from_masked_frame(rgb_frame, proxy_mask, downscale_factor=4)
+
+
+def test_from_masked_frame_proxy_mask_shape_mismatch(rgb_frame: Frame) -> None:
+    """A ProxyMask whose shape disagrees with the downscaled frame is rejected."""
+    bad_proxy = ProxyMask.from_mask(
+        Mask._from_array(np.zeros((16, 16), dtype=np.bool_)), 4
+    )
+    with pytest.raises(ValueError, match="ProxyMask shape"):
+        ProxyFrame.from_masked_frame(rgb_frame, bad_proxy, downscale_factor=4)
 
 
 def test_save_as_round_trip(tmp_path: Path, rgb_frame: Frame, sky_mask: Mask) -> None:
     """Saving and reloading round-trips the array and downscale factor."""
-    pf = ProxyFrame.from_frame(rgb_frame, sky_mask, 4, box_size=8, filter_size=1)
+    pf = ProxyFrame.from_masked_frame(
+        rgb_frame, sky_mask, downscale_factor=4, box_size=8, filter_size=1
+    )
     target = tmp_path / "proxy.npy"
     pf.save_as(target)
     assert target.exists()
@@ -70,14 +110,18 @@ def test_save_as_round_trip(tmp_path: Path, rgb_frame: Frame, sky_mask: Mask) ->
 
 def test_save_as_requires_npy(tmp_path: Path, rgb_frame: Frame, sky_mask: Mask) -> None:
     """Non-.npy suffix is rejected."""
-    pf = ProxyFrame.from_frame(rgb_frame, sky_mask, 4, box_size=8, filter_size=1)
+    pf = ProxyFrame.from_masked_frame(
+        rgb_frame, sky_mask, downscale_factor=4, box_size=8, filter_size=1
+    )
     with pytest.raises(ValueError, match=".npy"):
         pf.save_as(tmp_path / "proxy.tif")
 
 
 def test_save_as_no_overwrite(tmp_path: Path, rgb_frame: Frame, sky_mask: Mask) -> None:
     """Existing file without overwrite=True raises."""
-    pf = ProxyFrame.from_frame(rgb_frame, sky_mask, 4, box_size=8, filter_size=1)
+    pf = ProxyFrame.from_masked_frame(
+        rgb_frame, sky_mask, downscale_factor=4, box_size=8, filter_size=1
+    )
     target = tmp_path / "proxy.npy"
     pf.save_as(target)
     with pytest.raises(FileExistsError):
@@ -86,7 +130,9 @@ def test_save_as_no_overwrite(tmp_path: Path, rgb_frame: Frame, sky_mask: Mask) 
 
 def test_detached_path_raises(rgb_frame: Frame, sky_mask: Mask) -> None:
     """Detached proxy raises when .path is accessed."""
-    pf = ProxyFrame.from_frame(rgb_frame, sky_mask, 4, box_size=8, filter_size=1)
+    pf = ProxyFrame.from_masked_frame(
+        rgb_frame, sky_mask, downscale_factor=4, box_size=8, filter_size=1
+    )
     with pytest.raises(AttributeError, match="not backed"):
         _ = pf.path
 

@@ -61,50 +61,102 @@ def to_grayscale(array: np.ndarray) -> np.ndarray:
     )
 
 
-def interpolate_bad_pixels(array: np.ndarray, mask: np.ndarray) -> np.ndarray:
-    """Replace masked pixels with the mean of their valid 8-connected neighbors.
+def interpolate_bad_pixels(
+    array: np.ndarray,
+    mask: np.ndarray,
+    *,
+    bleed_aware: bool,
+) -> np.ndarray:
+    """Replace masked pixels, optionally compensating for charge bleed.
 
     Uses the mean rather than the median to preserve channel correlation in
     RGB images — per-channel median selects values from different neighbor
     pixels, producing a synthetic color that introduces a systematic bias
     visible after frame averaging.
 
-    Operates only on the small set of masked pixel coordinates rather than
-    rolling the full image array, so cost scales with the number of bad pixels,
-    not with image size.
+    When ``bleed_aware=False``, each flagged pixel is replaced by the mean of
+    its valid 8-connected neighbors (legacy behavior).
+
+    When ``bleed_aware=True`` (default), the 8 neighbors of every flagged
+    pixel are also treated as contaminated — hot pixels on real sensors bleed
+    charge into their surroundings, so the raw 8-neighbor mean still carries
+    the bleed signature. Each pixel in the dilated 3×3 block is replaced by
+    the inverse-distance-weighted mean of the uncontaminated pixels in the
+    surrounding 5×5 ring, which preserves local gradients across the block.
+    Gaussian noise with a MAD-estimated σ is then added, so the patch does
+    not become a low-variance island that pops up after frame stacking.
+
+    Operates only on the small set of affected pixel coordinates rather than
+    rolling the full image array, so cost scales with the number of bad
+    pixels, not with image size.
 
     Args:
         array: Image array (2D or 3D).
         mask: Boolean 2D mask; True where a pixel is bad.
+        bleed_aware: If True, also interpolate the 8-neighbors of every bad
+            pixel from the next ring out, and inject local-σ noise.
 
     Returns:
-        A copy of *array* with masked pixels replaced by neighbor means.
-        Pixels with no valid neighbors are set to zero.
+        A copy of *array* with affected pixels replaced. Pixels with no valid
+        donors are set to zero.
     """
     result = array.copy()
-    ys, xs = np.where(mask)
-    if ys.size == 0:
+    if not mask.any():
         return result
+
+    if bleed_aware:
+        bad = _dilate_mask_1px(mask)
+        radius = 2
+    else:
+        bad = mask
+        radius = 1
 
     h, w = array.shape[:2]
     limits = np.iinfo(array.dtype)
-    shifts = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]
+    offsets = [
+        (dy, dx)
+        for dy in range(-radius, radius + 1)
+        for dx in range(-radius, radius + 1)
+        if (dy, dx) != (0, 0)
+    ]
+
+    ys, xs = np.where(bad)
 
     for y, x in zip(ys, xs):
-        neighbour_vals = [
-            array[y + dy, x + dx]
-            for dy, dx in shifts
-            if 0 <= y + dy < h and 0 <= x + dx < w and not mask[y + dy, x + dx]
-        ]
-        if neighbour_vals:
-            mean = np.mean(neighbour_vals, axis=0)
-            result[y, x] = np.clip(np.rint(mean), limits.min, limits.max).astype(
-                array.dtype
-            )
-        else:
+        donors: list[np.ndarray] = []
+        weights: list[float] = []
+        for dy, dx in offsets:
+            ny, nx = y + dy, x + dx
+            if 0 <= ny < h and 0 <= nx < w and not bad[ny, nx]:
+                donors.append(array[ny, nx])
+                weights.append(1.0 / float(np.hypot(dy, dx)))
+        if not donors:
             result[y, x] = 0
+            continue
+        donor_arr = np.asarray(donors, dtype=np.float64)
+        weight_arr = np.asarray(weights, dtype=np.float64)
+        value = np.average(donor_arr, axis=0, weights=weight_arr)
+        if bleed_aware:
+            rng = np.random.default_rng()
+            median = np.median(donor_arr, axis=0)
+            sigma = 1.4826 * np.median(np.abs(donor_arr - median), axis=0)
+            value = value + rng.normal(0.0, sigma)
+        result[y, x] = np.clip(np.rint(value), limits.min, limits.max).astype(
+            array.dtype
+        )
 
     return result
+
+
+def _dilate_mask_1px(mask: np.ndarray) -> np.ndarray:
+    """Dilate a 2D boolean mask by one pixel with 8-connectivity."""
+    padded = np.pad(mask, 1, mode="constant", constant_values=False)
+    dilated = np.zeros_like(mask)
+    h, w = mask.shape
+    for dy in range(3):
+        for dx in range(3):
+            dilated |= padded[dy : dy + h, dx : dx + w]
+    return dilated
 
 
 def build_dark_bad_pixel_mask(dark_array: np.ndarray) -> np.ndarray:
