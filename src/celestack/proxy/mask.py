@@ -8,13 +8,13 @@ import numpy as np
 import plotly.graph_objects as go
 
 from celestack.config import CFG
-from celestack.mask._plotting import plot_mask
 from celestack.mask.core import Mask
 from celestack.proxy._core import (
     load_downscale_factor,
     write_or_verify_downscale_factor,
 )
 from celestack.proxy._downscale import majority_vote
+from celestack.proxy._plotting import plot_proxy_mask
 
 
 class ProxyMask:
@@ -136,16 +136,33 @@ class ProxyMask:
         np.save(target, self._array)
         self._path = target
 
-    def plot(self) -> go.Figure:
+    def plot(
+        self,
+        *,
+        show_pixels: bool = True,
+        upscale_coordinates: bool = True,
+    ) -> go.Figure:
         """Render the proxy mask as a black-and-white Plotly figure.
 
-        Axes are in the proxy mask's native pixel coordinates.
+        Args:
+            show_pixels: If True (default), render as a Heatmap with
+                per-pixel hover data. If False, render as a static PNG
+                background image.
+            upscale_coordinates: If True (default), scale the axes by
+                the proxy's ``downscale_factor`` so hover coordinates
+                are expressed in the full-resolution pixel space.
 
         Returns:
-            A Plotly figure with the boolean mask rendered as a static PNG.
+            A Plotly figure.
         """
         title = self._path.name if self._path is not None else "<detached>"
-        return plot_mask(self._array, title=title, highlight_noise=0)
+        return plot_proxy_mask(
+            self._array,
+            title=title,
+            downscale_factor=self._downscale_factor,
+            show_pixels=show_pixels,
+            upscale_coordinates=upscale_coordinates,
+        )
 
     def __repr__(self) -> str:
         """Return a concise debug representation of the proxy mask."""

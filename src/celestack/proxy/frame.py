@@ -114,7 +114,8 @@ class ProxyFrame:
             )
             raise ValueError(msg)
 
-        gray = to_grayscale(frame.array)
+        with frame._conserve_cache():
+            gray = to_grayscale(frame.array)
         small = block_average(gray, downscale_factor)
         max_value = float(np.iinfo(np.dtype(frame.dtype)).max)
         rescaled = (small.astype(np.float32) / max_value).astype(np.float16)
@@ -220,10 +221,33 @@ class ProxyFrame:
         np.save(target, self._array)
         self._path = target
 
-    def plot(self) -> go.Figure:
-        """Render the proxy frame as a percentile-stretched grayscale image."""
+    def plot(
+        self,
+        *,
+        show_pixels: bool = True,
+        upscale_coordinates: bool = False,
+    ) -> go.Figure:
+        """Render the proxy frame as a percentile-stretched grayscale image.
+
+        Args:
+            show_pixels: If True (default), render as a Heatmap with
+                per-pixel hover data. If False, render as a static PNG
+                background image (faster for very large proxies).
+            upscale_coordinates: If True, scale the axes by
+                the proxy's ``downscale_factor`` so hover coordinates
+                are expressed in the full-resolution pixel space.
+
+        Returns:
+            A Plotly figure.
+        """
         title = self._path.name if self._path is not None else "<detached>"
-        return plot_proxy_frame(self._array, title=title)
+        return plot_proxy_frame(
+            self._array,
+            title=title,
+            downscale_factor=self._downscale_factor,
+            show_pixels=show_pixels,
+            upscale_coordinates=upscale_coordinates,
+        )
 
     def __repr__(self) -> str:
         """Return a concise debug representation of the proxy frame."""
